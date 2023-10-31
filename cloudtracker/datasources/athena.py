@@ -41,7 +41,7 @@ from cloudtracker import normalize_api_call
 # TODO Add teardown to remove all the athena tables, partitions, and views
 
 
-NUM_MONTHS_FOR_PARTITIONS = 12
+NUM_MONTHS_FOR_PARTITIONS = 4
 
 
 class Athena(object):
@@ -54,46 +54,50 @@ class Athena(object):
     workgroup = 'primary'
 
     def query_athena(
-        self, query, context={"Database": database}, do_not_wait=False, skip_header=True
+        self, query, context={"Database": database}, do_not_wait=False, skip_header=True, retry=False
     ):
         logging.debug("Making query {}".format(query))
+
+        # if function call is not for retry we set retry as 1
+        if not retry:
+            self.retry = 1
 
         # Make query request dependent on whether the context is None or not
         if context is None:
             response = self.athena.start_query_execution(
                 QueryString=query,
-                ResultConfiguration={"OutputLocation": self.output_bucket},
-                WorkGroup=self.workgroup
+                ResultConfiguration={"OutputLocation": self.output_bucket}
             )
         else:
             response = self.athena.start_query_execution(
                 QueryString=query,
                 QueryExecutionContext=context,
-                ResultConfiguration={"OutputLocation": self.output_bucket},
-                WorkGroup=self.workgroup
+                ResultConfiguration={"OutputLocation": self.output_bucket}
             )
 
         if do_not_wait:
             return response["QueryExecutionId"]
 
-        self.wait_for_query_to_complete(response["QueryExecutionId"])
-
-        # Paginate results and combine them
-        rows = []
-        paginator = self.athena.get_paginator("get_query_results")
-        response_iterator = paginator.paginate(
-            QueryExecutionId=response["QueryExecutionId"]
-        )
-        row_count = 0
-        for response in response_iterator:
-            for row in response["ResultSet"]["Rows"]:
-                row_count += 1
-                if row_count == 1:
-                    if skip_header:
-                        # Skip header
-                        continue
-                rows.append(self.extract_response_values(row))
-        return rows
+        result = self.wait_for_query_to_complete(response["QueryExecutionId"])
+        if result:
+            # Paginate results and combine them
+            rows = []
+            paginator = self.athena.get_paginator("get_query_results")
+            response_iterator = paginator.paginate(
+                QueryExecutionId=response["QueryExecutionId"]
+            )
+            row_count = 0
+            for response in response_iterator:
+                for row in response["ResultSet"]["Rows"]:
+                    row_count += 1
+                    if row_count == 1:
+                        if skip_header:
+                            # Skip header
+                            continue
+                    rows.append(self.extract_response_values(row))
+            return rows
+        else:
+            return self.query_athena(query, context, do_not_wait, skip_header, True)
 
     def extract_response_values(self, row):
         result = []
@@ -115,6 +119,10 @@ class Athena(object):
             if state == "SUCCEEDED":
                 return True
             if state == "FAILED" or state == "CANCELLED":
+                # retring if query faild or canceled
+                if self.retry > 0:
+                    self.retry -= 1
+                    return False
                 raise Exception(
                     "Query entered state {state} with reason {reason}".format(
                         state=state,
@@ -161,7 +169,7 @@ class Athena(object):
                 )
                 time.sleep(1)
 
-    def __init__(self, config, account, start, end, args):
+    def __init__(self, config, account, boto3_session, start, end, args):
         # Mute boto except errors
         logging.getLogger("botocore").setLevel(logging.WARN)
         logging.info(
@@ -218,11 +226,11 @@ class Athena(object):
         #
         # Display the AWS identity (doubles as a check that boto creds are setup)
         #
-        sts = boto3.client("sts")
+        sts = boto3_session.client("sts")
         identity = sts.get_caller_identity()
         logging.info("Using AWS identity: {}".format(identity["Arn"]))
         current_account_id = identity["Account"]
-        region = boto3.session.Session().region_name
+        region = boto3_session.region_name
 
         if "output_s3_bucket" in config:
             self.output_bucket = config["output_s3_bucket"]
@@ -248,8 +256,8 @@ class Athena(object):
         logging.info("Account cloudtrail log path: {}".format(cloudtrail_log_path))
 
         # Open connections to needed AWS services
-        self.athena = boto3.client("athena")
-        self.s3 = boto3.client("s3")
+        self.athena = boto3_session.client("athena")
+        self.s3 = boto3_session.client("s3")
 
         if args.skip_setup:
             logging.info("Skipping initial table creation")
@@ -332,7 +340,7 @@ class Athena(object):
             partition_set.add(partition[0])
 
         # Get region list. Using ec2 here just because it exists in all regions.
-        regions = boto3.session.Session().get_available_regions("ec2")
+        regions = boto3_session.get_available_regions("ec2")
 
         queries_to_make = set()
 
@@ -363,8 +371,8 @@ class Athena(object):
                 )
             if query != "":
                 queries_to_make.add(
-                    "ALTER TABLE {table_name} ADD ".format(table_name=self.table_name)
-                    + query
+                    "ALTER TABLE {table_name} ADD ".format(table_name=self.table_name) +
+                    query
                 )
 
         # Run the queries
@@ -424,17 +432,17 @@ class Athena(object):
             # TODO Find a smarter way to parse this data
 
             # Remove the '{' and '}'
-            event = event[1 : len(event) - 1]
+            event = event[1: len(event) - 1]
 
             # Split into 'field0=s3.amazonaws.com' and 'field1=GetBucketAcl'
             event = event.split(", ")
             # Get the eventsource 's3.amazonaws.com'
-            service = event[0].split("=")[1]
+            service = event[0]
             # Get the service 's3'
             service = service.split(".")[0]
 
             # Get the eventname 'GetBucketAcl'
-            eventname = event[1].split("=")[1]
+            eventname = event[1]
 
             event_names[normalize_api_call(service, eventname)] = True
 

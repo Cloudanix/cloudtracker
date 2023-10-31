@@ -22,9 +22,9 @@ WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWIS
 USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ---------------------------------------------------------------------------
 """
+
 __version__ = "2.1.5"
 
-import json
 import logging
 import pkg_resources
 import re
@@ -123,9 +123,9 @@ class Privileges(object):
         # Look at denied
         for stmt in self.stmts:
             if (
-                stmt["Effect"] == "Deny"
-                and "*" in make_list(stmt.get("Resource", None))
-                and stmt.get("Condition", None) is None
+                stmt["Effect"] == "Deny" and
+                "*" in make_list(stmt.get("Resource", None)) and
+                stmt.get("Condition", None) is None
             ):
 
                 stmt_actions = self.get_actions_from_statement(stmt)
@@ -158,9 +158,24 @@ def normalize_api_call(service, eventName):
     return "{}:{}".format(service, eventName)
 
 
-def get_account_iam(account):
+def get_account_iam(account, boto3_session):
     """Given account data from the config file, open the IAM file for the account"""
-    return json.load(open(account["iam"]))
+    iam_client = boto3_session.client('iam')
+    # Retrieve the account authorization details
+    try:
+        response = iam_client.get_account_authorization_details()
+        response['GroupDetailList'] = iam_client.get_account_authorization_details(Filter=['Group'])['GroupDetailList']
+        response['Policies'].extend(iam_client.get_account_authorization_details(Filter=['AWSManagedPolicy'])['Policies'])
+        response['Policies'].extend(iam_client.get_account_authorization_details(Filter=['LocalManagedPolicy'])['Policies'])
+
+    except Exception as e:
+        response = {
+            "UserDetailList": [],
+            "GroupDetailList": [],
+            "RoleDetailList": [],
+            "Policies": []
+        }
+    return response
 
 
 def get_allowed_users(account_iam):
@@ -210,8 +225,6 @@ def get_user_iam(username, account_iam):
     user_iam = jmespath.search(
         "UserDetailList[] | [?UserName == `{}`] | [0]".format(username), account_iam
     )
-    if user_iam is None:
-        exit("ERROR: Unknown user named {}".format(username))
     return user_iam
 
 
@@ -220,9 +233,15 @@ def get_role_iam(rolename, account_iam):
     role_iam = jmespath.search(
         "RoleDetailList[] | [?RoleName == `{}`] | [0]".format(rolename), account_iam
     )
-    if role_iam is None:
-        raise Exception("Unknown role named {}".format(rolename))
     return role_iam
+
+
+def get_policy_iam(policyname, account_iam):
+    """Given the IAM of an account, and a role name, return the IAM data for the role"""
+    policy_iam = jmespath.search(
+        "Policies[] | [?PolicyName == `{}`] | [0]".format(policyname), account_iam
+    )
+    return policy_iam
 
 
 def get_user_allowed_actions(aws_api_list, user_iam, account_iam):
@@ -299,6 +318,22 @@ def get_role_allowed_actions(aws_api_list, role_iam, account_iam):
     return privileges.determine_allowed()
 
 
+def get_policy_allowed_actions(aws_api_list, policy_iam, account_iam):
+    """Return the privileges granted to a role by IAM"""
+    privileges = Privileges(aws_api_list)
+
+    # Get privileges from managed policies
+    policy_filter = "Policies[?Arn == `{}`].PolicyVersionList[?IsDefaultVersion == true] | [0][0].Document"
+    policy = jmespath.search(
+        policy_filter.format(policy_iam["Arn"]), account_iam
+    )
+    if policy:
+        for stmt in make_list(policy["Statement"]):
+            privileges.add_stmt(stmt)
+
+    return privileges.determine_allowed()
+
+
 def is_recorded_by_cloudtrail(action):
     """Given an action, return True if it would be logged by CloudTrail"""
     if action in cloudtrail_supported_actions:
@@ -325,6 +360,9 @@ def print_diff(performed_actions, allowed_actions, printfilter, use_color):
     ALLOWED_BUT_NOT_KNOWN_IF_PERFORMED = 4
 
     actions = {}
+
+    used_permissions = []
+    unused_permissions = []
 
     for action in performed_actions:
         # Convert to IAM names
@@ -360,22 +398,27 @@ def print_diff(performed_actions, allowed_actions, printfilter, use_color):
                 continue
 
         if actions[action] == PERFORMED_AND_ALLOWED:
-            colored_print("  {}".format(display_name), use_color, "white")
+            # colored_print("  {}".format(display_name), use_color, "white")
+            used_permissions.append(display_name)
         elif actions[action] == PERFORMED_BUT_NOT_ALLOWED:
-            colored_print("+ {}".format(display_name), use_color, "green")
+            continue
+            # colored_print("+ {}".format(display_name), use_color, "green")
         elif actions[action] == ALLOWED_BUT_NOT_PERFORMED:
             if printfilter.get("show_used", True):
                 # Ignore this as it wasn't used
                 continue
-            colored_print("- {}".format(display_name), use_color, "red")
+            # colored_print("- {}".format(display_name), use_color, "red")
+            unused_permissions.append(display_name)
         elif actions[action] == ALLOWED_BUT_NOT_KNOWN_IF_PERFORMED:
             if printfilter.get("show_used", True):
                 # Ignore this as it wasn't used
                 continue
             if printfilter.get("show_unknown", True):
-                colored_print("? {}".format(display_name), use_color, "yellow")
+                0
+                # colored_print("? {}".format(display_name), use_color, "yellow")
         else:
             raise Exception("Unknown constant")
+    return unused_permissions, used_permissions
 
 
 def get_account(accounts, account_name):
@@ -388,7 +431,7 @@ def get_account(accounts, account_name):
     for account in accounts:
         if account_name == account["name"] or account_name == str(account["id"]):
             # Sanity check all values exist
-            if "name" not in account or "id" not in account or "iam" not in account:
+            if "name" not in account or "id" not in account:
                 exit(
                     "ERROR: Account {} does not specify an id or iam in the config file".format(
                         account_name
@@ -418,11 +461,11 @@ def read_aws_api_list(aws_api_list_file="aws_api_list.txt"):
     return aws_api_list
 
 
-def run(args, config, start, end):
+def run(args, config, boto3_session, start, end):
     """Perform the requested command"""
-    use_color = args.use_color
+    use_color = args[0].use_color
 
-    account = get_account(config["accounts"], args.account)
+    account = config["account"]
 
     if "elasticsearch" in config:
         try:
@@ -440,7 +483,7 @@ def run(args, config, start, end):
         logging.debug("Using Athena")
         from cloudtracker.datasources.athena import Athena
 
-        datasource = Athena(config["athena"], account, start, end, args)
+        datasource = Athena(config['account']["athena"], account, boto3_session, start, end, args[0])
 
     # Read AWS actions
     aws_api_list = read_aws_api_list()
@@ -457,87 +500,165 @@ def run(args, config, start, end):
         (service, event) = line.rstrip().split(":")
         cloudtrail_supported_actions[normalize_api_call(service, event)] = True
 
-    account_iam = get_account_iam(account)
+    account_iam = get_account_iam(account, boto3_session)
+    users_performed_actions = {}
+    roles_performed_actions = {}
+    policy_allowed_actions = {}
+    data = []
+    for arg in args:
+        if arg.list:
+            actor_type = arg.list
 
-    if args.list:
-        actor_type = args.list
-
-        if actor_type == "users":
-            allowed_actors = get_allowed_users(account_iam)
-            performed_actors = datasource.get_performed_users()
-        elif actor_type == "roles":
-            allowed_actors = get_allowed_roles(account_iam)
-            performed_actors = datasource.get_performed_roles()
-        else:
-            exit("ERROR: --list argument must be one of 'users' or 'roles'")
-
-        print_actor_diff(performed_actors, allowed_actors, use_color)
-
-    else:
-        if args.destaccount:
-            destination_account = get_account(config["accounts"], args.destaccount)
-        else:
-            destination_account = account
-
-        destination_iam = get_account_iam(destination_account)
-
-        search_query = datasource.get_search_query()
-
-        if args.user:
-            username = args.user
-
-            user_iam = get_user_iam(username, account_iam)
-            print(
-                "Getting info on {}, user created {}".format(
-                    args.user, user_iam["CreateDate"]
-                )
-            )
-
-            if args.destrole:
-                dest_role_iam = get_role_iam(args.destrole, destination_iam)
-                print("Getting info for AssumeRole into {}".format(args.destrole))
-
-                allowed_actions = get_role_allowed_actions(
-                    aws_api_list, dest_role_iam, destination_iam
-                )
-                performed_actions = datasource.get_performed_event_names_by_user_in_role(
-                    search_query, user_iam, dest_role_iam
-                )
+            if actor_type == "users":
+                allowed_actors = get_allowed_users(account_iam)
+                performed_actors = datasource.get_performed_users()
+            elif actor_type == "roles":
+                allowed_actors = get_allowed_roles(account_iam)
+                performed_actors = datasource.get_performed_roles()
             else:
-                allowed_actions = get_user_allowed_actions(
-                    aws_api_list, user_iam, account_iam
-                )
-                performed_actions = datasource.get_performed_event_names_by_user(
-                    search_query, user_iam
-                )
-        elif args.role:
-            rolename = args.role
-            role_iam = get_role_iam(rolename, account_iam)
-            print("Getting info for role {}".format(rolename))
+                exit("ERROR: --list argument must be one of 'users' or 'roles'")
 
-            if args.destrole:
-                dest_role_iam = get_role_iam(args.destrole, destination_iam)
-                print("Getting info for AssumeRole into {}".format(args.destrole))
+            print_actor_diff(performed_actors, allowed_actors, use_color)
 
-                allowed_actions = get_role_allowed_actions(
-                    aws_api_list, dest_role_iam, destination_iam
-                )
-                performed_actions = datasource.get_performed_event_names_by_role_in_role(
-                    search_query, role_iam, dest_role_iam
-                )
-            else:
-                allowed_actions = get_role_allowed_actions(
-                    aws_api_list, role_iam, account_iam
-                )
-                performed_actions = datasource.get_performed_event_names_by_role(
-                    search_query, role_iam
-                )
         else:
-            exit("ERROR: Must specify a user or a role")
+            if arg.destaccount:
+                destination_account = get_account(config["accounts"], arg.destaccount)
+            else:
+                destination_account = account
 
-        printfilter = {}
-        printfilter["show_unknown"] = args.show_unknown
-        printfilter["show_benign"] = args.show_benign
-        printfilter["show_used"] = args.show_used
+            destination_iam = account_iam
 
-        print_diff(performed_actions, allowed_actions, printfilter, use_color)
+            search_query = datasource.get_search_query()
+
+            if arg.user:
+                username = arg.user
+                if not username in users_performed_actions:
+                    user_iam = get_user_iam(username, account_iam)
+
+                    if not user_iam:
+                        continue
+                # print(
+                #     "Getting info for user {}".format(
+                #         arg.user
+                #     )
+                # )
+
+                if arg.destrole:
+                    dest_role_iam = get_role_iam(arg.destrole, destination_iam)
+                    if not dest_role_iam:
+                        continue
+                    print("Getting info for AssumeRole into {}".format(arg.destrole))
+
+                    allowed_actions = get_role_allowed_actions(
+                        aws_api_list, dest_role_iam, destination_iam
+                    )
+
+                    performed_actions = datasource.get_performed_event_names_by_user_in_role(
+                        search_query, user_iam, dest_role_iam
+                    )
+                elif arg.destpolicy:
+                    # print("Getting info for policy {}".format(arg.destpolicy))
+                    if not arg.destpolicy in policy_allowed_actions:
+                        dest_policy_iam = get_policy_iam(arg.destpolicy, destination_iam)
+                        if not dest_policy_iam:
+                            policy_allowed_actions[arg.destpolicy] = []
+                            continue
+                        policy_allowed_actions[arg.destpolicy] = get_policy_allowed_actions(
+                            aws_api_list, dest_policy_iam, destination_iam
+                        )
+                    allowed_actions = policy_allowed_actions[arg.destpolicy]
+                    if not allowed_actions:
+                        continue
+
+                    if not username in users_performed_actions:
+                        users_performed_actions[username] = datasource.get_performed_event_names_by_user(
+                            search_query, user_iam
+                        )
+                    performed_actions = users_performed_actions[username]
+
+                else:
+                    allowed_actions = get_user_allowed_actions(
+                        aws_api_list, user_iam, account_iam
+                    )
+                    performed_actions = datasource.get_performed_event_names_by_user(
+                        search_query, user_iam
+                    )
+            elif arg.role:
+                rolename = arg.role
+                if not rolename in roles_performed_actions:
+                    role_iam = get_role_iam(rolename, account_iam)
+                    if not role_iam:
+                        continue
+                # print("Getting info for role {}".format(rolename))
+
+                if arg.destrole:
+                    dest_role_iam = get_role_iam(arg.destrole, destination_iam)
+                    print("Getting info for AssumeRole into {}".format(arg.destrole))
+                    if not dest_role_iam:
+                        continue
+
+                    allowed_actions = get_role_allowed_actions(
+                        aws_api_list, dest_role_iam, destination_iam
+                    )
+                    performed_actions = datasource.get_performed_event_names_by_role_in_role(
+                        search_query, role_iam, dest_role_iam
+                    )
+                elif arg.destpolicy:
+                    # print("Getting info for policy {}".format(arg.destpolicy))
+                    if not arg.destpolicy in policy_allowed_actions:
+                        dest_policy_iam = get_policy_iam(arg.destpolicy, destination_iam)
+                        if not dest_policy_iam:
+                            policy_allowed_actions[arg.destpolicy] = []
+                            continue
+                        policy_allowed_actions[arg.destpolicy] = get_policy_allowed_actions(
+                            aws_api_list, dest_policy_iam, destination_iam
+                        )
+                    allowed_actions = policy_allowed_actions[arg.destpolicy]
+                    if not allowed_actions:
+                        continue
+
+                    if not rolename in roles_performed_actions:
+                        roles_performed_actions[rolename] = datasource.get_performed_event_names_by_role(
+                            search_query, role_iam
+                        )
+                    performed_actions = roles_performed_actions[rolename]
+                else:
+                    allowed_actions = get_role_allowed_actions(
+                        aws_api_list, role_iam, account_iam
+                    )
+                    performed_actions = datasource.get_performed_event_names_by_role(
+                        search_query, role_iam
+                    )
+            else:
+                exit("ERROR: Must specify a user or a role")
+
+            printfilter = {}
+            printfilter["show_unknown"] = arg.show_unknown
+            printfilter["show_benign"] = arg.show_benign
+            printfilter["show_used"] = arg.show_used
+            unused_permissions = []
+            used_permissions = []
+            for action in allowed_actions:
+                if action in performed_actions:
+                    used_permissions.append(action)
+                else:
+                    unused_permissions.append(action)
+
+            # unused_permissions, used_permissions = print_diff(performed_actions, allowed_actions, printfilter, use_color)
+            principal = {}
+            if arg.user:
+                principal["name"] = arg.user
+            elif arg.role:
+                principal["name"] = arg.role
+            if arg.destpolicy:
+                principal["attachmentName"] = arg.destpolicy
+                principal['arn'] = arg.destpolicyarn
+            elif arg.destrole:
+                principal["attachmentName"] = arg.destrole
+
+            principal.update({
+                "usedPermissions": used_permissions,
+                "unusedPermissions": unused_permissions
+            })
+            data.append(principal)
+    return data, datasource.output_bucket
