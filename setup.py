@@ -42,7 +42,7 @@ setup(
     },
     install_requires=[
         "ansicolors~=1.1.8",
-        "boto3~=11.24.65",
+        "boto3~=1.24.65",
         "botocore~=1.27.65",
         "jmespath~=1.0.1",
         "pyyaml~=4.2b4",
