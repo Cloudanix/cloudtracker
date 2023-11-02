@@ -26,13 +26,15 @@ USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import argparse
 import datetime
+import boto3
+import botocore.exceptions
+import logging
 
-import yaml
 
 from . import run
 
 
-def main():
+def main(principals, account_id, credentials, principal_types):
     now = datetime.datetime.now()
     parser = argparse.ArgumentParser()
 
@@ -49,9 +51,7 @@ def main():
     parser.add_argument(
         "--config",
         help="Config file name (default: config.yaml)",
-        required=False,
-        default="config.yaml",
-        type=argparse.FileType("r"),
+        required=False
     )
     parser.add_argument(
         "--iam",
@@ -65,7 +65,7 @@ def main():
     parser.add_argument(
         "--start",
         help="Start of date range (ex. 2018-01-21). Defaults to one year ago.",
-        default=(now - datetime.timedelta(days=365)).date().isoformat(),
+        default=(now - datetime.timedelta(days=90)).date().isoformat(),
         required=False,
         type=str,
     )
@@ -78,6 +78,12 @@ def main():
     )
     parser.add_argument(
         "--destrole", help="Role assumed into", required=False, default=None, type=str
+    )
+    parser.add_argument(
+        "--destpolicy", help="Policy assumed into", required=False, default=None, type=str
+    )
+    parser.add_argument(
+        "--destpolicyarn", help="Policy arn", required=False, default=None, type=str
     )
     parser.add_argument(
         "--destaccount",
@@ -124,18 +130,79 @@ def main():
         action="store_true",
         default=False,
     )
+    args = []
+    for principal in principals:
+        if all(element in principal_types for element in ['role', 'policy']):
+            args.append(parser.parse_args(args=['--account', account_id, '--role', principal['name'], '--destpolicy', principal['attachmentName'], '--destpolicyarn', principal['arn']]))
+        elif all(element in principal_types for element in ['user', 'policy']):
+            args.append(parser.parse_args(args=['--account', account_id, '--user', principal['name'], '--destpolicy', principal['attachmentName'], '--destpolicyarn', principal['arn']]))
+        elif all(element in principal_types for element in ['user', 'role']):
+            args.append(parser.parse_args(args=['--account', account_id, '--user', principal['name'], '--destrole', principal['attachmentName']]))
+        else:
+            return []
 
-    args = parser.parse_args()
-
-    # Read config
     try:
-        config = yaml.load(args.config)
-    except yaml.YAMLError as e:
-        raise argparse.ArgumentError(
-            None,
-            "ERROR: Could not load yaml from config file {}\n{}".format(
-                args.config.name, e
-            ),
-        )
+        if credentials['type'] == 'self':
+            boto3_session = boto3.Session(
+                aws_access_key_id=credentials['aws_access_key_id'],
+                aws_secret_access_key=credentials['aws_secret_access_key'],
+            )
 
-    run(args, config, args.start, args.end)
+        elif credentials['type'] == 'assumerole':
+            boto3_session = boto3.Session(
+                aws_access_key_id=credentials['aws_access_key_id'],
+                aws_secret_access_key=credentials['aws_secret_access_key'],
+                aws_session_token=credentials['session_token'],
+            )
+
+    except (botocore.exceptions.BotoCoreError, botocore.exceptions.ClientError) as e:
+        logging.debug("Error occurred calling boto3.Session().", exc_info=True)
+        logging.error(
+            (
+                "Unable to initialize the default AWS session, an error occurred: %s. Make sure your AWS credentials "
+                "are configured correctly, your AWS config file is valid, and your credentials have the SecurityAudit "
+                "policy attached."
+            ),
+            e,
+        )
+        return []
+
+    # Create a CloudTrail client
+    cloudtrail_client = boto3_session.client('cloudtrail')
+
+    # Retrieve the list of CloudTrail trails
+    response = cloudtrail_client.describe_trails()
+
+    # Extract the S3 bucket names from the response
+    bucket_names = [trail['S3BucketName'] for trail in response['trailList']]
+
+    if len(bucket_names) == 0:
+        return []
+    config = {
+        "account":
+            {
+                "id": account_id,
+                "athena": {
+                    "s3_bucket": bucket_names[0],
+                    "path": ''
+                }
+            }
+    }
+    data = []
+    if args:
+        data, output_bucket = run(args, config, boto3_session, args[0].start, args[0].end)
+        logging.info(f"cleaning the athena query results")
+        output_bucket = output_bucket.split("/")[-1]
+        try:
+            s3_client = boto3_session.client('s3')
+
+            objects = s3_client.list_objects_v2(Bucket=output_bucket)
+
+            if 'Contents' in objects:
+                for obj in objects['Contents']:
+                    s3_client.delete_object(Bucket=output_bucket, Key=obj['Key'])
+
+        except Exception as e:
+            logging.error(f"Error while cleaning the athena query results: {e}")
+
+    return data
