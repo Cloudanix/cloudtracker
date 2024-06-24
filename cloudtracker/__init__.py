@@ -162,19 +162,22 @@ def get_account_iam(account, boto3_session):
     """Given account data from the config file, open the IAM file for the account"""
     iam_client = boto3_session.client('iam')
     # Retrieve the account authorization details
+    response = {
+        "UserDetailList": [],
+        "GroupDetailList": [],
+        "RoleDetailList": [],
+        "Policies": []
+    }
     try:
-        response = iam_client.get_account_authorization_details()
-        response['GroupDetailList'] = iam_client.get_account_authorization_details(Filter=['Group'])['GroupDetailList']
-        response['Policies'].extend(iam_client.get_account_authorization_details(Filter=['AWSManagedPolicy'])['Policies'])
-        response['Policies'].extend(iam_client.get_account_authorization_details(Filter=['LocalManagedPolicy'])['Policies'])
+        paginator = iam_client.get_paginator('get_account_authorization_details')
+        for page in paginator.paginate():
+            response['GroupDetailList'].extend(page['GroupDetailList'])
+            response['Policies'].extend(page['Policies'])
+            response['UserDetailList'].extend(page['UserDetailList'])
+            response['RoleDetailList'].extend(page['RoleDetailList'])
 
     except Exception as e:
-        response = {
-            "UserDetailList": [],
-            "GroupDetailList": [],
-            "RoleDetailList": [],
-            "Policies": []
-        }
+        return response
     return response
 
 
