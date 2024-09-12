@@ -460,6 +460,18 @@ class Athena(object):
 
         return self.get_events_from_search(response)
 
+    def get_performed_event_names_by_sso_user(self, _, user_iam):
+        """For a user, return all performed events"""
+
+        query = "select distinct (eventsource, eventname) from {table_name} where (userIdentity.arn like '{identity}') and {search_filter}".format(
+            table_name=self.table_name,
+            identity=user_iam["identity"],
+            search_filter=self.search_filter,
+        )
+        response = self.query_athena(query)
+
+        return self.get_events_from_search(response)
+
     def get_performed_event_names_by_role(self, _, role_iam):
         """For a role, return all performed events"""
 
