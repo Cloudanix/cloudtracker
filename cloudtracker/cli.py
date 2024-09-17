@@ -164,6 +164,7 @@ def main(principals, account_id, credentials, principal_types):
                 aws_access_key_id=credentials['aws_access_key_id'],
                 aws_secret_access_key=credentials['aws_secret_access_key'],
                 aws_session_token=credentials['session_token'],
+                region_name=credentials.get('primary_region', "us-east-1")
             )
 
     except (botocore.exceptions.BotoCoreError, botocore.exceptions.ClientError) as e:
