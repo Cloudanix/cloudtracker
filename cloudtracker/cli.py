@@ -190,12 +190,25 @@ def main(principals, account_id, credentials, principal_types):
 
     if len(bucket_names) == 0:
         return []
+    s3 = boto3_session.client('s3')
+    trail = None
+    cloudtrail_log_path = "AWSLogs/{account_id}/CloudTrail/".format(account_id=account_id)
+    for bucket in bucket_names:
+        response = s3.list_objects_v2(Bucket=bucket, Prefix='')
+        for obj in response.get('Contents', []):
+            if obj.get('Key') == cloudtrail_log_path:
+                trail = bucket
+                break
+        if trail:
+            break
+    if not trail:
+        return []
     config = {
         "account":
             {
                 "id": account_id,
                 "athena": {
-                    "s3_bucket": bucket_names[0],
+                    "s3_bucket": trail,
                     "path": ''
                 }
             }
