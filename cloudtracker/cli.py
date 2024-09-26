@@ -80,6 +80,15 @@ def main(principals, account_id, credentials, principal_types):
         "--destrole", help="Role assumed into", required=False, default=None, type=str
     )
     parser.add_argument(
+        "--permissionsetid", help="Permission Set into", required=False, default=None, type=str
+    )
+    parser.add_argument(
+        "--identity", help="Permission Set identity into", required=False, default=None, type=str
+    )
+    parser.add_argument(
+        "--policies", help="Permission Set policies into", required=False, default=None, type=list
+    )
+    parser.add_argument(
         "--destpolicy", help="Policy assumed into", required=False, default=None, type=str
     )
     parser.add_argument(
@@ -138,6 +147,8 @@ def main(principals, account_id, credentials, principal_types):
             args.append(parser.parse_args(args=['--account', account_id, '--user', principal['name'], '--destpolicy', principal['attachmentName'], '--destpolicyarn', principal['arn']]))
         elif all(element in principal_types for element in ['user', 'role']):
             args.append(parser.parse_args(args=['--account', account_id, '--user', principal['name'], '--destrole', principal['attachmentName']]))
+        elif all(element in principal_types for element in ['user', 'permissionset']):
+            args.append(parser.parse_args(args=['--account', account_id, '--user', principal['name'], '--permissionsetid', principal['id'], '--identity', principal['identity'], '--policies', principal['policies']]))
         else:
             return []
 
@@ -153,6 +164,7 @@ def main(principals, account_id, credentials, principal_types):
                 aws_access_key_id=credentials['aws_access_key_id'],
                 aws_secret_access_key=credentials['aws_secret_access_key'],
                 aws_session_token=credentials['session_token'],
+                region_name=credentials.get('primary_region', "us-east-1")
             )
 
     except (botocore.exceptions.BotoCoreError, botocore.exceptions.ClientError) as e:

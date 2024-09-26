@@ -536,7 +536,12 @@ def run(args, config, boto3_session, start, end):
             if arg.user:
                 username = arg.user
                 if not username in users_performed_actions:
-                    user_iam = get_user_iam(username, account_iam)
+                    if arg.permissionsetid:
+                        user_iam = {
+                            "identity": arg.identity
+                        }
+                    else:
+                        user_iam = get_user_iam(username, account_iam)
 
                     if not user_iam:
                         continue
@@ -578,6 +583,25 @@ def run(args, config, boto3_session, start, end):
                             search_query, user_iam
                         )
                     performed_actions = users_performed_actions[username]
+
+                elif arg.permissionsetid:
+                    allowed_actions = []
+                    for policy in arg.policies:
+                        if not policy in policy_allowed_actions:
+                            dest_policy_iam = get_policy_iam(policy, destination_iam)
+                            if not dest_policy_iam:
+                                policy_allowed_actions[policy] = []
+                                continue
+                            policy_allowed_actions[policy] = get_policy_allowed_actions(
+                                aws_api_list, dest_policy_iam, destination_iam
+                            )
+                        allowed_actions.extend(policy_allowed_actions[policy])
+                    if not allowed_actions:
+                        continue
+
+                    performed_actions = datasource.get_performed_event_names_by_sso_user(
+                        search_query, user_iam
+                    )
 
                 else:
                     allowed_actions = get_user_allowed_actions(
@@ -658,6 +682,8 @@ def run(args, config, boto3_session, start, end):
                 principal['arn'] = arg.destpolicyarn
             elif arg.destrole:
                 principal["attachmentName"] = arg.destrole
+            elif arg.permissionsetid:
+                principal["id"] = arg.permissionsetid
 
             principal.update({
                 "usedPermissions": used_permissions,
