@@ -194,7 +194,7 @@ def main(principals, account_id, credentials, principal_types):
     trail = None
     cloudtrail_log_path = "AWSLogs/{account_id}/CloudTrail/".format(account_id=account_id)
     for bucket in bucket_names:
-        response = s3.list_objects_v2(Bucket=bucket, Prefix='')
+        response = s3.list_objects_v2(Bucket=bucket, Prefix='', MaxKeys=20)
         for obj in response.get('Contents', []):
             if obj.get('Key') == cloudtrail_log_path:
                 trail = bucket
