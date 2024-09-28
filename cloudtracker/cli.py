@@ -34,7 +34,7 @@ import logging
 from . import run
 
 
-def main(principals, account_id, credentials, principal_types):
+def main(principals, organization_id, account_id, credentials, principal_types):
     now = datetime.datetime.now()
     parser = argparse.ArgumentParser()
 
@@ -193,14 +193,18 @@ def main(principals, account_id, credentials, principal_types):
     s3 = boto3_session.client('s3')
     trail = None
     cloudtrail_log_path = "AWSLogs/{account_id}/CloudTrail/".format(account_id=account_id)
+    if organization_id:
+        cloudtrail_log_path = "AWSLogs/{organization_id}/{account_id}/CloudTrail/".format(account_id=account_id, organization_id=organization_id)
     for bucket in bucket_names:
-        response = s3.list_objects_v2(Bucket=bucket, Prefix='', MaxKeys=20)
-        for obj in response.get('Contents', []):
-            if obj.get('Key') == cloudtrail_log_path:
-                trail = bucket
-                break
-        if trail:
+        try:
+            s3.get_object(
+                Bucket=bucket,
+                Key=cloudtrail_log_path,
+            )
+            trail = bucket
             break
+        except s3.exceptions.NoSuchKey as e:
+            continue
     if not trail:
         return []
     config = {
@@ -213,6 +217,8 @@ def main(principals, account_id, credentials, principal_types):
                 }
             }
     }
+    if organization_id:
+        config["account"]["athena"]["org_id"] = organization_id
     data = []
     if args:
         data, output_bucket = run(args, config, boto3_session, args[0].start, args[0].end)
