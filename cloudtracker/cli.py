@@ -34,7 +34,7 @@ import logging
 from . import run
 
 
-def main(principals, account_id, credentials, principal_types):
+def main(principals, account_id, credentials, principal_types, account_iam=None):
     now = datetime.datetime.now()
     parser = argparse.ArgumentParser()
 
@@ -215,7 +215,7 @@ def main(principals, account_id, credentials, principal_types):
     }
     data = []
     if args:
-        data, output_bucket = run(args, config, boto3_session, args[0].start, args[0].end)
+        data, output_bucket, account_iam = run(args, config, boto3_session, args[0].start, args[0].end, account_iam)
         logging.info(f"cleaning the athena query results")
         output_bucket = output_bucket.split("/")[-1]
         try:
@@ -230,4 +230,4 @@ def main(principals, account_id, credentials, principal_types):
         except Exception as e:
             logging.error(f"Error while cleaning the athena query results: {e}")
 
-    return data
+    return data, account_iam

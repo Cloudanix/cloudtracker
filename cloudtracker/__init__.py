@@ -176,6 +176,27 @@ def get_account_iam(account, boto3_session):
             response['UserDetailList'].extend(page['UserDetailList'])
             response['RoleDetailList'].extend(page['RoleDetailList'])
 
+            for user_detail in page['UserDetailList']:
+                for policy in user_detail.get('UserPolicyList', []):
+                    policy['Arn'] = f"arn:aws:iam::{account['id']}:policy/{policy['PolicyName']}"
+                    policy['PolicyVersionList'] = [{"Document": policy['PolicyDocument']}]
+                    del policy['PolicyDocument']
+                    response['Policies'].append(policy)
+
+            for group_detail in page['GroupDetailList']:
+                for policy in group_detail.get('GroupPolicyList', []):
+                    policy['Arn'] = f"arn:aws:iam::{account['id']}:policy/{policy['PolicyName']}"
+                    policy['PolicyVersionList'] = [{"Document": policy['PolicyDocument']}]
+                    del policy['PolicyDocument']
+                    response['Policies'].append(policy)
+
+            for role_detail in page['RoleDetailList']:
+                for policy in role_detail.get('RolePolicyList', []):
+                    policy['Arn'] = f"arn:aws:iam::{account['id']}:policy/{policy['PolicyName']}"
+                    policy['PolicyVersionList'] = [{"Document": policy['PolicyDocument']}]
+                    del policy['PolicyDocument']
+                    response['Policies'].append(policy)
+
     except Exception as e:
         return response
     return response
@@ -464,7 +485,7 @@ def read_aws_api_list(aws_api_list_file="aws_api_list.txt"):
     return aws_api_list
 
 
-def run(args, config, boto3_session, start, end):
+def run(args, config, boto3_session, start, end, account_iam):
     """Perform the requested command"""
     use_color = args[0].use_color
 
@@ -503,7 +524,8 @@ def run(args, config, boto3_session, start, end):
         (service, event) = line.rstrip().split(":")
         cloudtrail_supported_actions[normalize_api_call(service, event)] = True
 
-    account_iam = get_account_iam(account, boto3_session)
+    if not account_iam:
+        account_iam = get_account_iam(account, boto3_session)
     users_performed_actions = {}
     roles_performed_actions = {}
     policy_allowed_actions = {}
@@ -690,4 +712,4 @@ def run(args, config, boto3_session, start, end):
                 "unusedPermissions": unused_permissions
             })
             data.append(principal)
-    return data, datasource.output_bucket
+    return data, datasource.output_bucket, account_iam
