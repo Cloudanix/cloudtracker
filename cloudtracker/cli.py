@@ -34,7 +34,7 @@ import logging
 from . import run
 
 
-def main(principals, organization_id, account_id, credentials, principal_types):
+def main(principals, organization_id, account_id, credentials, principal_types, account_iam, datasource):
     now = datetime.datetime.now()
     parser = argparse.ArgumentParser()
 
@@ -150,7 +150,7 @@ def main(principals, organization_id, account_id, credentials, principal_types):
         elif all(element in principal_types for element in ['user', 'permissionset']):
             args.append(parser.parse_args(args=['--account', account_id, '--user', principal['name'], '--permissionsetid', principal['id'], '--identity', principal['identity'], '--policies', principal['policies']]))
         else:
-            return []
+            raise Exception("invalid principal")
 
     try:
         if credentials['type'] == 'self':
@@ -177,7 +177,7 @@ def main(principals, organization_id, account_id, credentials, principal_types):
             ),
             e,
         )
-        return []
+        raise Exception("Error occurred calling boto3 Session")
 
     # Create a CloudTrail client
     cloudtrail_client = boto3_session.client('cloudtrail')
@@ -189,13 +189,13 @@ def main(principals, organization_id, account_id, credentials, principal_types):
     bucket_names = [trail['S3BucketName'] for trail in response['trailList']]
 
     if len(bucket_names) == 0:
-        return []
+        raise Exception("cloudtrail trails doesn't exists")
     s3 = boto3_session.client('s3')
-    trail = None
+    S3Bucket = None
     cloudtrail_log_paths = {"account": {"path": "AWSLogs/{account_id}/CloudTrail/".format(account_id=account_id)}}
     if organization_id:
         cloudtrail_log_paths["organization"] = {"path": "AWSLogs/{organization_id}/{account_id}/CloudTrail/".format(account_id=account_id, organization_id=organization_id)}
-    for log_level, cloudtrail_log_path in cloudtrail_log_paths:
+    for log_level, cloudtrail_log_path in cloudtrail_log_paths.items():
         for bucket in bucket_names:
             try:
                 s3.get_object(
@@ -208,17 +208,18 @@ def main(principals, organization_id, account_id, credentials, principal_types):
             except s3.exceptions.NoSuchKey as e:
                 continue
 
-    trail = cloudtrail_log_paths.get("account", {}).get("bucket")
+    S3Bucket = cloudtrail_log_paths.get("account", {}).get("bucket")
+
     if cloudtrail_log_paths.get("organization", {}).get("present"):
-        trail = cloudtrail_log_paths.get("organization", {}).get("bucket")
-    if not trail:
-        return []
+        S3Bucket = cloudtrail_log_paths.get("organization", {}).get("bucket")
+    if not S3Bucket:
+        raise Exception("cloudtrail s3 bucket doesn't exists")
     config = {
         "account":
             {
                 "id": account_id,
                 "athena": {
-                    "s3_bucket": trail,
+                    "s3_bucket": S3Bucket,
                     "path": ''
                 }
             }
@@ -227,7 +228,7 @@ def main(principals, organization_id, account_id, credentials, principal_types):
         config["account"]["athena"]["org_id"] = organization_id
     data = []
     if args:
-        data, output_bucket = run(args, config, boto3_session, args[0].start, args[0].end)
+        data, output_bucket, account_iam, datasource = run(args, config, boto3_session, args[0].start, args[0].end, account_iam, datasource)
         logging.info(f"cleaning the athena query results")
         output_bucket = output_bucket.split("/")[-1]
         try:
@@ -242,4 +243,4 @@ def main(principals, organization_id, account_id, credentials, principal_types):
         except Exception as e:
             logging.error(f"Error while cleaning the athena query results: {e}")
 
-    return data
+    return data, account_iam, datasource
