@@ -192,19 +192,25 @@ def main(principals, organization_id, account_id, credentials, principal_types):
         return []
     s3 = boto3_session.client('s3')
     trail = None
-    cloudtrail_log_path = "AWSLogs/{account_id}/CloudTrail/".format(account_id=account_id)
+    cloudtrail_log_paths = {"account": {"path": "AWSLogs/{account_id}/CloudTrail/".format(account_id=account_id)}}
     if organization_id:
-        cloudtrail_log_path = "AWSLogs/{organization_id}/{account_id}/CloudTrail/".format(account_id=account_id, organization_id=organization_id)
-    for bucket in bucket_names:
-        try:
-            s3.get_object(
-                Bucket=bucket,
-                Key=cloudtrail_log_path,
-            )
-            trail = bucket
-            break
-        except s3.exceptions.NoSuchKey as e:
-            continue
+        cloudtrail_log_paths["organization"] = {"path": "AWSLogs/{organization_id}/{account_id}/CloudTrail/".format(account_id=account_id, organization_id=organization_id)}
+    for log_level, cloudtrail_log_path in cloudtrail_log_paths:
+        for bucket in bucket_names:
+            try:
+                s3.get_object(
+                    Bucket=bucket,
+                    Key=cloudtrail_log_path["path"],
+                )
+                cloudtrail_log_paths[log_level]["present"] = True
+                cloudtrail_log_paths[log_level]["bucket"] = bucket
+                break
+            except s3.exceptions.NoSuchKey as e:
+                continue
+
+    trail = cloudtrail_log_paths.get("account", {}).get("bucket")
+    if cloudtrail_log_paths.get("organization", {}).get("present"):
+        trail = cloudtrail_log_paths.get("organization", {}).get("bucket")
     if not trail:
         return []
     config = {
@@ -217,7 +223,7 @@ def main(principals, organization_id, account_id, credentials, principal_types):
                 }
             }
     }
-    if organization_id:
+    if cloudtrail_log_paths.get("organization", {}).get("present"):
         config["account"]["athena"]["org_id"] = organization_id
     data = []
     if args:
