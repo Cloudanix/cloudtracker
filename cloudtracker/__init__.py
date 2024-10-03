@@ -485,29 +485,29 @@ def read_aws_api_list(aws_api_list_file="aws_api_list.txt"):
     return aws_api_list
 
 
-def run(args, config, boto3_session, start, end, account_iam):
+def run(args, config, boto3_session, start, end, account_iam, datasource):
     """Perform the requested command"""
     use_color = args[0].use_color
 
     account = config["account"]
+    if not datasource:
+        if "elasticsearch" in config:
+            try:
+                from cloudtracker.datasources.es import ElasticSearch
+            except ImportError:
+                exit(
+                    "Elasticsearch support not installed. Install with support via "
+                    "'pip install git+https://github.com/duo-labs/cloudtracker.git#egg=cloudtracker[es1]' for "
+                    "elasticsearch 1 support, or "
+                    "'pip install git+https://github.com/duo-labs/cloudtracker.git#egg=cloudtracker[es6]' for "
+                    "elasticsearch 6 support"
+                )
+            datasource = ElasticSearch(config["elasticsearch"], start, end)
+        else:
+            logging.debug("Using Athena")
+            from cloudtracker.datasources.athena import Athena
 
-    if "elasticsearch" in config:
-        try:
-            from cloudtracker.datasources.es import ElasticSearch
-        except ImportError:
-            exit(
-                "Elasticsearch support not installed. Install with support via "
-                "'pip install git+https://github.com/duo-labs/cloudtracker.git#egg=cloudtracker[es1]' for "
-                "elasticsearch 1 support, or "
-                "'pip install git+https://github.com/duo-labs/cloudtracker.git#egg=cloudtracker[es6]' for "
-                "elasticsearch 6 support"
-            )
-        datasource = ElasticSearch(config["elasticsearch"], start, end)
-    else:
-        logging.debug("Using Athena")
-        from cloudtracker.datasources.athena import Athena
-
-        datasource = Athena(config['account']["athena"], account, boto3_session, start, end, args[0])
+            datasource = Athena(config['account']["athena"], account, boto3_session, start, end, args[0])
 
     # Read AWS actions
     aws_api_list = read_aws_api_list()
@@ -712,4 +712,4 @@ def run(args, config, boto3_session, start, end, account_iam):
                 "unusedPermissions": unused_permissions
             })
             data.append(principal)
-    return data, datasource.output_bucket, account_iam
+    return data, datasource.output_bucket, account_iam, datasource
