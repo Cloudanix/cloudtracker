@@ -140,11 +140,14 @@ def main(principals, organization_id, account_id, credentials, principal_types, 
         default=False,
     )
     args = []
+    principals_arn = ""
     for principal in principals:
+        if not principal.get('arn', principal.get('identity')) in principals_arn:
+            principals_arn = principals_arn + f"'{principal.get('arn', principal.get('identity'))}', "
         if all(element in principal_types for element in ['role', 'policy']):
-            args.append(parser.parse_args(args=['--account', account_id, '--role', principal['name'], '--destpolicy', principal['attachmentName'], '--destpolicyarn', principal['arn']]))
+            args.append(parser.parse_args(args=['--account', account_id, '--role', principal['name'], '--destpolicy', principal['attachmentName'], '--destpolicyarn', principal['policyArn']]))
         elif all(element in principal_types for element in ['user', 'policy']):
-            args.append(parser.parse_args(args=['--account', account_id, '--user', principal['name'], '--destpolicy', principal['attachmentName'], '--destpolicyarn', principal['arn']]))
+            args.append(parser.parse_args(args=['--account', account_id, '--user', principal['name'], '--destpolicy', principal['attachmentName'], '--destpolicyarn', principal['policyArn']]))
         elif all(element in principal_types for element in ['user', 'role']):
             args.append(parser.parse_args(args=['--account', account_id, '--user', principal['name'], '--destrole', principal['attachmentName']]))
         elif all(element in principal_types for element in ['user', 'permissionset']):
@@ -152,6 +155,7 @@ def main(principals, organization_id, account_id, credentials, principal_types, 
         else:
             raise Exception("invalid principal")
 
+    principals_arn = f"({principals_arn[:-2]})"
     try:
         if credentials['type'] == 'self':
             boto3_session = boto3.Session(
@@ -228,7 +232,7 @@ def main(principals, organization_id, account_id, credentials, principal_types, 
         config["account"]["athena"]["org_id"] = organization_id
     data = []
     if args:
-        data, output_bucket, account_iam, datasource = run(args, config, boto3_session, args[0].start, args[0].end, account_iam, datasource)
+        data, output_bucket, account_iam, datasource = run(args, config, boto3_session, args[0].start, args[0].end, account_iam, datasource, principals_arn)
         logging.info(f"cleaning the athena query results")
         output_bucket = output_bucket.split("/")[-1]
         try:
