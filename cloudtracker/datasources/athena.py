@@ -27,6 +27,7 @@ import logging
 import boto3
 import time
 import json
+import re
 import datetime
 from dateutil.relativedelta import relativedelta
 
@@ -419,6 +420,28 @@ class Athena(object):
         # Athena doesn't use this call, but needs to support it being called
         return None
 
+    def map_results_for_arns(self, searchresults):
+        data = {}
+        for result in searchresults:
+            event = result[0]
+            event = event[1: len(event) - 1]
+            event = event.split(", ")
+            arn = event[2].replace("'", "")
+            if not arn in data:
+                data[arn] = []
+            data[arn].append(result)
+
+        return data
+
+    def replace_arn(self, arn_string):
+        # Use regex to match the part after assumed-role/ and replace only the last section after the underscore
+        pattern = r'(assumed-role/[^/]+_)[^/]+(/[^/]+)'
+
+        # Replace the part after the last underscore with '%'
+        updated_arn = re.sub(pattern, r'\1%\2', arn_string)
+
+        return updated_arn
+
     def get_events_from_search(self, searchresults):
         """
         Given the results of a query for events, return these in a more usable fashion
@@ -483,6 +506,75 @@ class Athena(object):
         response = self.query_athena(query)
 
         return self.get_events_from_search(response)
+
+    def get_performed_event_names_by_users(self, _, users_arn):
+        """For a users, return all performed events"""
+
+        query = "select distinct (eventsource, eventname, userIdentity.arn) from {table_name} where (userIdentity.arn in {identities}) and {search_filter}".format(
+            table_name=self.table_name,
+            identities=users_arn,
+            search_filter=self.search_filter,
+        )
+        response = self.query_athena(query)
+
+        data = self.map_results_for_arns(response)
+        users_arn = users_arn[1:-1].replace("'", "")
+        users_arn = users_arn.replace(" ", "").split(",")
+        events_data = {}
+        for arn, results in data.items():
+            events_data[arn.split("/")[-1]] = self.get_events_from_search(results)
+
+        for arn in users_arn:
+            if not arn.split("/")[-1] in events_data:
+                events_data[arn.split("/")[-1]] = {}
+        return events_data
+
+    def get_performed_event_names_by_sso_users(self, _, users_arn):
+        """For a sso users, return all performed events"""
+        users_arn = users_arn[1:-1].replace("'", "")
+        users_arn = users_arn.replace(" ", "").split(",")
+        identities = ""
+        for arn in users_arn:
+            identities = identities + f"userIdentity.arn like '{arn}' or "
+        identities = f"({identities[:-4]})"
+        query = "select distinct (eventsource, eventname, userIdentity.arn) from {table_name} where {identities} and {search_filter}".format(
+            table_name=self.table_name,
+            identities=identities,
+            search_filter=self.search_filter,
+        )
+        response = self.query_athena(query)
+
+        data = self.map_results_for_arns(response)
+        events_data = {}
+        for arn, results in data.items():
+            events_data[self.replace_arn(arn)] = self.get_events_from_search(results)
+
+        for arn in users_arn:
+            if not arn in events_data:
+                events_data[arn] = {}
+        return events_data
+
+    def get_performed_event_names_by_roles(self, _, roles_arn):
+        """For a roles, return all performed events"""
+
+        query = "select distinct (eventsource, eventname, userIdentity.sessionContext.sessionIssuer.arn) from {table_name} where (userIdentity.sessionContext.sessionIssuer.arn in {identities}) and {search_filter}".format(
+            table_name=self.table_name,
+            identities=roles_arn,
+            search_filter=self.search_filter,
+        )
+        response = self.query_athena(query)
+
+        data = self.map_results_for_arns(response)
+        roles_arn = roles_arn[1:-1].replace("'", "")
+        roles_arn = roles_arn.replace(" ", "").split(",")
+        events_data = {}
+        for arn, results in data.items():
+            events_data[arn.split("/")[-1]] = self.get_events_from_search(results)
+
+        for arn in roles_arn:
+            if not arn.split("/")[-1] in events_data:
+                events_data[arn.split("/")[-1]] = {}
+        return events_data
 
     def get_performed_event_names_by_user_in_role(
         self, searchquery, user_iam, role_iam
