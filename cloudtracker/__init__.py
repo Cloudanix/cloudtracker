@@ -485,7 +485,7 @@ def read_aws_api_list(aws_api_list_file="aws_api_list.txt"):
     return aws_api_list
 
 
-def run(args, config, boto3_session, start, end, account_iam, datasource):
+def run(args, config, boto3_session, start, end, account_iam, datasource, principals_arn):
     """Perform the requested command"""
     use_color = args[0].use_color
 
@@ -526,8 +526,19 @@ def run(args, config, boto3_session, start, end, account_iam, datasource):
 
     if not account_iam:
         account_iam = get_account_iam(account, boto3_session)
+
+    search_query = datasource.get_search_query()
+
     users_performed_actions = {}
     roles_performed_actions = {}
+    if args[0].user:
+        if args[0].destpolicy:
+            users_performed_actions = datasource.get_performed_event_names_by_users(search_query, principals_arn)
+        elif args[0].permissionsetid:
+            users_performed_actions = datasource.get_performed_event_names_by_sso_users(search_query, principals_arn)
+    elif args[0].role:
+        roles_performed_actions = datasource.get_performed_event_names_by_roles(search_query, principals_arn)
+
     policy_allowed_actions = {}
     data = []
     for arg in args:
@@ -621,9 +632,11 @@ def run(args, config, boto3_session, start, end, account_iam, datasource):
                     if not allowed_actions:
                         continue
 
-                    performed_actions = datasource.get_performed_event_names_by_sso_user(
-                        search_query, user_iam
-                    )
+                    if not user_iam["identity"] in users_performed_actions:
+                        users_performed_actions[user_iam["identity"]] = datasource.get_performed_event_names_by_user(
+                            search_query, user_iam
+                        )
+                    performed_actions = users_performed_actions[user_iam["identity"]]
 
                 else:
                     allowed_actions = get_user_allowed_actions(
@@ -701,7 +714,7 @@ def run(args, config, boto3_session, start, end, account_iam, datasource):
                 principal["name"] = arg.role
             if arg.destpolicy:
                 principal["attachmentName"] = arg.destpolicy
-                principal['arn'] = arg.destpolicyarn
+                principal['policyArn'] = arg.destpolicyarn
             elif arg.destrole:
                 principal["attachmentName"] = arg.destrole
             elif arg.permissionsetid:
