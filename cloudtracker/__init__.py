@@ -529,6 +529,8 @@ def run(args, config, boto3_session, start, end, account_iam, datasource, princi
 
     search_query = datasource.get_search_query()
 
+    users_performed_actions = {}
+    roles_performed_actions = {}
     if args[0].user:
         if args[0].destpolicy:
             users_performed_actions = datasource.get_performed_event_names_by_users(search_query, principals_arn)
@@ -536,9 +538,7 @@ def run(args, config, boto3_session, start, end, account_iam, datasource, princi
             users_performed_actions = datasource.get_performed_event_names_by_sso_users(search_query, principals_arn)
     elif args[0].role:
         roles_performed_actions = datasource.get_performed_event_names_by_roles(search_query, principals_arn)
-    else:
-        users_performed_actions = {}
-        roles_performed_actions = {}
+
     policy_allowed_actions = {}
     data = []
     for arg in args:

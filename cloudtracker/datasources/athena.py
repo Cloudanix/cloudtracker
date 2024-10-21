@@ -420,7 +420,7 @@ class Athena(object):
         # Athena doesn't use this call, but needs to support it being called
         return None
 
-    def map_results_for_arns(self, searchresults):
+    def search_results(self, searchresults):
         data = {}
         for result in searchresults:
             event = result[0]
@@ -517,7 +517,7 @@ class Athena(object):
         )
         response = self.query_athena(query)
 
-        data = self.map_results_for_arns(response)
+        data = self.search_results(response)
         users_arn = users_arn[1:-1].replace("'", "")
         users_arn = users_arn.replace(" ", "").split(",")
         events_data = {}
@@ -544,7 +544,7 @@ class Athena(object):
         )
         response = self.query_athena(query)
 
-        data = self.map_results_for_arns(response)
+        data = self.search_results(response)
         events_data = {}
         for arn, results in data.items():
             events_data[self.replace_arn(arn)] = self.get_events_from_search(results)
@@ -564,7 +564,7 @@ class Athena(object):
         )
         response = self.query_athena(query)
 
-        data = self.map_results_for_arns(response)
+        data = self.search_results(response)
         roles_arn = roles_arn[1:-1].replace("'", "")
         roles_arn = roles_arn.replace(" ", "").split(",")
         events_data = {}
