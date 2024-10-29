@@ -34,7 +34,7 @@ import logging
 from . import run
 
 
-def main(principals, organization_id, account_id, credentials, principal_types, account_iam, datasource):
+def main(principals, organization_id, account_id, credentials, principal_types, account_iam, datasource, trails):
     now = datetime.datetime.now()
     parser = argparse.ArgumentParser()
 
@@ -183,56 +183,127 @@ def main(principals, organization_id, account_id, credentials, principal_types, 
         )
         raise Exception("Error occurred calling boto3 Session")
 
-    # Create a CloudTrail client
-    cloudtrail_client = boto3_session.client('cloudtrail')
+    athena_boto3_session = None
 
-    # Retrieve the list of CloudTrail trails
-    response = cloudtrail_client.describe_trails()
+    if not trails:
+        # Create a CloudTrail client
+        cloudtrail_client = boto3_session.client('cloudtrail')
 
-    # Extract the S3 bucket names from the response
-    bucket_names = [trail['S3BucketName'] for trail in response['trailList']]
+        # Retrieve the list of CloudTrail trails
+        response = cloudtrail_client.describe_trails()
 
-    if len(bucket_names) == 0:
-        raise Exception("cloudtrail trails doesn't exists")
-    s3 = boto3_session.client('s3')
-    S3Bucket = None
-    cloudtrail_log_paths = {"account": {"path": "AWSLogs/{account_id}/CloudTrail/".format(account_id=account_id)}}
-    if organization_id:
-        cloudtrail_log_paths["organization"] = {"path": "AWSLogs/{organization_id}/{account_id}/CloudTrail/".format(account_id=account_id, organization_id=organization_id)}
-    for log_level, cloudtrail_log_path in cloudtrail_log_paths.items():
-        for bucket in bucket_names:
-            try:
-                s3.get_object(
-                    Bucket=bucket,
-                    Key=cloudtrail_log_path["path"],
-                )
-                cloudtrail_log_paths[log_level]["present"] = True
-                cloudtrail_log_paths[log_level]["bucket"] = bucket
-                break
-            except s3.exceptions.NoSuchKey as e:
-                continue
+        # Extract the S3 bucket names from the response
+        bucket_names = [trail['S3BucketName'] for trail in response['trailList']]
 
-    S3Bucket = cloudtrail_log_paths.get("account", {}).get("bucket")
+        if len(bucket_names) == 0:
+            raise Exception("cloudtrail trails doesn't exists")
+        s3 = boto3_session.client('s3')
+        S3Bucket = None
+        cloudtrail_log_paths = {"account": {"path": "AWSLogs/{account_id}/CloudTrail/".format(account_id=account_id)}}
+        if organization_id:
+            cloudtrail_log_paths["organization"] = {"path": "AWSLogs/{organization_id}/{account_id}/CloudTrail/".format(account_id=account_id, organization_id=organization_id)}
+        for log_level, cloudtrail_log_path in cloudtrail_log_paths.items():
+            for bucket in bucket_names:
+                try:
+                    s3.get_object(
+                        Bucket=bucket,
+                        Key=cloudtrail_log_path["path"],
+                    )
+                    cloudtrail_log_paths[log_level]["present"] = True
+                    cloudtrail_log_paths[log_level]["bucket"] = bucket
+                    break
+                except s3.exceptions.NoSuchKey as e:
+                    continue
 
-    if cloudtrail_log_paths.get("organization", {}).get("present"):
-        S3Bucket = cloudtrail_log_paths.get("organization", {}).get("bucket")
-    if not S3Bucket:
-        raise Exception("cloudtrail s3 bucket doesn't exists")
-    config = {
-        "account":
-            {
-                "id": account_id,
-                "athena": {
-                    "s3_bucket": S3Bucket,
-                    "path": ''
+        S3Bucket = cloudtrail_log_paths.get("account", {}).get("bucket")
+
+        if cloudtrail_log_paths.get("organization", {}).get("present"):
+            S3Bucket = cloudtrail_log_paths.get("organization", {}).get("bucket")
+        if not S3Bucket:
+            raise Exception("cloudtrail s3 bucket doesn't exists")
+        config = {
+            "account":
+                {
+                    "id": account_id,
+                    "athena": {
+                        "s3_bucket": S3Bucket,
+                        "path": ''
+                    }
                 }
-            }
-    }
-    if cloudtrail_log_paths.get("organization", {}).get("present"):
-        config["account"]["athena"]["org_id"] = organization_id
+        }
+        if cloudtrail_log_paths.get("organization", {}).get("present"):
+            config["account"]["athena"]["org_id"] = organization_id
+    else:
+        S3Bucket = None
+        cloudtrail_log_paths = {"account": {"path": "AWSLogs/{account_id}/CloudTrail/".format(account_id=account_id)}}
+        if organization_id:
+            cloudtrail_log_paths["organization"] = {"path": "AWSLogs/{organization_id}/{account_id}/CloudTrail/".format(account_id=account_id, organization_id=organization_id)}
+        for log_level, cloudtrail_log_path in cloudtrail_log_paths.items():
+            for trail in trails:
+                creds = trail.get("creds", {})
+                try:
+                    if creds['type'] == 'self':
+                        cloudtrail_log_paths[log_level]["boto3_session"] = boto3.Session(
+                            aws_access_key_id=creds['aws_access_key_id'],
+                            aws_secret_access_key=creds['aws_secret_access_key'],
+                        )
+
+                    elif creds['type'] == 'assumerole':
+                        cloudtrail_log_paths[log_level]["boto3_session"] = boto3.Session(
+                            aws_access_key_id=creds['aws_access_key_id'],
+                            aws_secret_access_key=creds['aws_secret_access_key'],
+                            aws_session_token=creds['session_token'],
+                            region_name=creds.get('primary_region', "us-east-1")
+                        )
+
+                except (botocore.exceptions.BotoCoreError, botocore.exceptions.ClientError) as e:
+                    logging.debug("Error occurred calling boto3.Session().", exc_info=True)
+                    logging.error(
+                        (
+                            "Unable to initialize the default AWS session, an error occurred: %s. Make sure your AWS credentials "
+                            "are configured correctly, your AWS config file is valid, and your credentials have the SecurityAudit "
+                            "policy attached."
+                        ),
+                        e,
+                    )
+                    continue
+
+                try:
+                    s3 = cloudtrail_log_paths[log_level]["boto3_session"].client('s3')
+                    s3.get_object(
+                        Bucket=trail["bucketName"],
+                        Key=cloudtrail_log_path["path"],
+                    )
+                    cloudtrail_log_paths[log_level]["present"] = True
+                    cloudtrail_log_paths[log_level]["bucket"] = trail["bucketName"]
+                    break
+                except s3.exceptions.NoSuchKey as e:
+                    continue
+
+        S3Bucket = cloudtrail_log_paths.get("account", {}).get("bucket")
+        athena_boto3_session = cloudtrail_log_paths.get("account", {}).get("boto3_session")
+
+        if cloudtrail_log_paths.get("organization", {}).get("present"):
+            S3Bucket = cloudtrail_log_paths.get("organization", {}).get("bucket")
+            athena_boto3_session = cloudtrail_log_paths.get("organization", {}).get("boto3_session")
+        if not S3Bucket:
+            raise Exception("cloudtrail s3 bucket doesn't exists")
+        config = {
+            "account":
+                {
+                    "id": account_id,
+                    "athena": {
+                        "s3_bucket": S3Bucket,
+                        "path": ''
+                    }
+                }
+        }
+        if cloudtrail_log_paths.get("organization", {}).get("present"):
+            config["account"]["athena"]["org_id"] = organization_id
+
     data = []
     if args:
-        data, output_bucket, account_iam, datasource = run(args, config, boto3_session, args[0].start, args[0].end, account_iam, datasource, principals_arn)
+        data, output_bucket, account_iam, datasource = run(args, config, boto3_session, args[0].start, args[0].end, account_iam, datasource, principals_arn, athena_boto3_session)
         logging.info(f"cleaning the athena query results")
         output_bucket = output_bucket.split("/")[-1]
         try:
