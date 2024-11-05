@@ -34,7 +34,7 @@ import logging
 from . import run
 
 
-def main(principals, organization_id, account_id, credentials, principal_types, account_iam, datasource, trails):
+def main(principals, organization_id, account_id, credentials, principal_types, account_iam, datasource, logging_account):
     now = datetime.datetime.now()
     parser = argparse.ArgumentParser()
 
@@ -185,7 +185,7 @@ def main(principals, organization_id, account_id, credentials, principal_types, 
 
     athena_boto3_session = None
 
-    if not trails:
+    if not logging_account:
         # Create a CloudTrail client
         cloudtrail_client = boto3_session.client('cloudtrail')
 
@@ -238,47 +238,46 @@ def main(principals, organization_id, account_id, credentials, principal_types, 
         cloudtrail_log_paths = {"account": {"path": "AWSLogs/{account_id}/CloudTrail/".format(account_id=account_id)}}
         if organization_id:
             cloudtrail_log_paths["organization"] = {"path": "AWSLogs/{organization_id}/{account_id}/CloudTrail/".format(account_id=account_id, organization_id=organization_id)}
+        creds = logging_account.get("creds", {})
         for log_level, cloudtrail_log_path in cloudtrail_log_paths.items():
-            for trail in trails:
-                creds = trail.get("creds", {})
-                try:
-                    if creds['type'] == 'self':
-                        cloudtrail_log_paths[log_level]["boto3_session"] = boto3.Session(
-                            aws_access_key_id=creds['aws_access_key_id'],
-                            aws_secret_access_key=creds['aws_secret_access_key'],
-                        )
 
-                    elif creds['type'] == 'assumerole':
-                        cloudtrail_log_paths[log_level]["boto3_session"] = boto3.Session(
-                            aws_access_key_id=creds['aws_access_key_id'],
-                            aws_secret_access_key=creds['aws_secret_access_key'],
-                            aws_session_token=creds['session_token'],
-                            region_name=creds.get('primary_region', "us-east-1")
-                        )
-
-                except (botocore.exceptions.BotoCoreError, botocore.exceptions.ClientError) as e:
-                    logging.debug("Error occurred calling boto3.Session().", exc_info=True)
-                    logging.error(
-                        (
-                            "Unable to initialize the default AWS session, an error occurred: %s. Make sure your AWS credentials "
-                            "are configured correctly, your AWS config file is valid, and your credentials have the SecurityAudit "
-                            "policy attached."
-                        ),
-                        e,
+            try:
+                if creds['type'] == 'self':
+                    cloudtrail_log_paths[log_level]["boto3_session"] = boto3.Session(
+                        aws_access_key_id=creds['aws_access_key_id'],
+                        aws_secret_access_key=creds['aws_secret_access_key'],
                     )
-                    continue
 
-                try:
-                    s3 = cloudtrail_log_paths[log_level]["boto3_session"].client('s3')
-                    s3.get_object(
-                        Bucket=trail["bucketName"],
-                        Key=cloudtrail_log_path["path"],
+                elif creds['type'] == 'assumerole':
+                    cloudtrail_log_paths[log_level]["boto3_session"] = boto3.Session(
+                        aws_access_key_id=creds['aws_access_key_id'],
+                        aws_secret_access_key=creds['aws_secret_access_key'],
+                        aws_session_token=creds['session_token'],
+                        region_name=creds.get('primary_region', "us-east-1")
                     )
-                    cloudtrail_log_paths[log_level]["present"] = True
-                    cloudtrail_log_paths[log_level]["bucket"] = trail["bucketName"]
-                    break
-                except s3.exceptions.NoSuchKey as e:
-                    continue
+
+            except (botocore.exceptions.BotoCoreError, botocore.exceptions.ClientError) as e:
+                logging.debug("Error occurred calling boto3.Session().", exc_info=True)
+                logging.error(
+                    (
+                        "Unable to initialize the default AWS session, an error occurred: %s. Make sure your AWS credentials "
+                        "are configured correctly, your AWS config file is valid, and your credentials have the SecurityAudit "
+                        "policy attached."
+                    ),
+                    e,
+                )
+                continue
+
+            try:
+                s3 = cloudtrail_log_paths[log_level]["boto3_session"].client('s3')
+                s3.get_object(
+                    Bucket=logging_account["bucketName"],
+                    Key=cloudtrail_log_path["path"],
+                )
+                cloudtrail_log_paths[log_level]["present"] = True
+                cloudtrail_log_paths[log_level]["bucket"] = logging_account["bucketName"]
+            except s3.exceptions.NoSuchKey as e:
+                continue
 
         S3Bucket = cloudtrail_log_paths.get("account", {}).get("bucket")
         athena_boto3_session = cloudtrail_log_paths.get("account", {}).get("boto3_session")
