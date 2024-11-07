@@ -485,7 +485,7 @@ def read_aws_api_list(aws_api_list_file="aws_api_list.txt"):
     return aws_api_list
 
 
-def run(args, config, boto3_session, start, end, account_iam, datasource, principals_arn):
+def run(args, config, boto3_session, start, end, account_iam, datasource, principals_arn, athena_boto3_session):
     """Perform the requested command"""
     use_color = args[0].use_color
 
@@ -506,8 +506,9 @@ def run(args, config, boto3_session, start, end, account_iam, datasource, princi
         else:
             logging.debug("Using Athena")
             from cloudtracker.datasources.athena import Athena
-
-            datasource = Athena(config['account']["athena"], account, boto3_session, start, end, args[0])
+            if not athena_boto3_session:
+                athena_boto3_session = boto3_session
+            datasource = Athena(config['account']["athena"], account, athena_boto3_session, start, end, args[0])
 
     # Read AWS actions
     aws_api_list = read_aws_api_list()
