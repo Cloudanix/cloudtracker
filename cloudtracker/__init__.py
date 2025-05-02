@@ -25,7 +25,6 @@ USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 __version__ = "2.1.5"
 
-import logging
 import pkg_resources
 import re
 
@@ -33,8 +32,6 @@ from colors import color
 import jmespath
 
 cloudtrail_supported_actions = None
-
-logging.basicConfig(level=logging.INFO, format="%(levelname)-8s %(message)s")
 
 # Translate CloudTrail name -> IAM name
 # Pulled from: http://bit.ly/2txbx1L
@@ -485,7 +482,7 @@ def read_aws_api_list(aws_api_list_file="aws_api_list.txt"):
     return aws_api_list
 
 
-def run(args, config, boto3_session, start, end, account_iam, datasource, principals_arn, athena_boto3_session):
+def run(args, config, boto3_session, start, end, account_iam, datasource, principals_arn, athena_boto3_session, cdx_logger):
     """Perform the requested command"""
     use_color = args[0].use_color
 
@@ -504,7 +501,7 @@ def run(args, config, boto3_session, start, end, account_iam, datasource, princi
                 )
             datasource = ElasticSearch(config["elasticsearch"], start, end)
         else:
-            logging.debug("Using Athena")
+            cdx_logger.debug("Using Athena")
             from cloudtracker.datasources.athena import Athena
             if not athena_boto3_session:
                 athena_boto3_session = boto3_session
