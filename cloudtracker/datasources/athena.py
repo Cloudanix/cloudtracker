@@ -53,11 +53,12 @@ class Athena(object):
     search_filter = ""
     table_name = ""
     workgroup = 'primary'
+    cdx_logger = logging
 
     def query_athena(
         self, query, context={"Database": database}, do_not_wait=False, skip_header=True, retry=False
     ):
-        logging.debug("Making query {}".format(query))
+        self.cdx_logger.debug("Making query {}".format(query))
 
         # if function call is not for retry we set retry as 1
         if not retry:
@@ -132,7 +133,7 @@ class Athena(object):
                         ],
                     )
                 )
-            logging.debug(
+            self.cdx_logger.debug(
                 "Sleeping 1 second while query {} completes".format(queryExecutionId)
             )
             time.sleep(1)
@@ -163,17 +164,19 @@ class Athena(object):
 
                 if len(queryExecutionIds) == 0:
                     return
-                logging.debug(
+                self.cdx_logger.debug(
                     "Sleeping 1 second while {} queries complete".format(
                         len(queryExecutionIds)
                     )
                 )
                 time.sleep(1)
 
-    def __init__(self, config, account, boto3_session, start, end, args):
+    def __init__(self, config, account, boto3_session, start, end, args, cdx_logger):
+        self.cdx_logger = cdx_logger
+        self.cdx_logger.info("Initializing Athena datasource.")
         # Mute boto except errors
-        logging.getLogger("botocore").setLevel(logging.WARN)
-        logging.info(
+        self.cdx_logger.getLogger("botocore").setLevel(self.cdx_logger.WARN)
+        self.cdx_logger.info(
             "Source of CloudTrail logs: s3://{bucket}/{path}".format(
                 bucket=config["s3_bucket"], path=config["path"]
             )
@@ -229,7 +232,7 @@ class Athena(object):
         #
         sts = boto3_session.client("sts")
         identity = sts.get_caller_identity()
-        logging.info("Using AWS identity: {}".format(identity["Arn"]))
+        self.cdx_logger.info("Using AWS identity: {}".format(identity["Arn"]))
         current_account_id = identity["Account"]
         region = boto3_session.region_name
 
@@ -239,11 +242,11 @@ class Athena(object):
             self.output_bucket = "s3://aws-athena-query-results-{}-{}".format(
                 current_account_id, region
             )
-        logging.info("Using output bucket: {}".format(self.output_bucket))
+        self.cdx_logger.info("Using output bucket: {}".format(self.output_bucket))
 
         if "workgroup" in config:
             self.workgroup = config["workgroup"]
-        logging.info("Using workgroup: {}".format(self.workgroup))
+        self.cdx_logger.info("Using workgroup: {}".format(self.workgroup))
 
         if not config.get('org_id'):
             cloudtrail_log_path = "s3://{bucket}/{path}/AWSLogs/{account_id}/CloudTrail".format(
@@ -254,14 +257,14 @@ class Athena(object):
                 bucket=config["s3_bucket"], path=config["path"], org_id=config["org_id"], account_id=account["id"]
             )
 
-        logging.info("Account cloudtrail log path: {}".format(cloudtrail_log_path))
+        self.cdx_logger.info("Account cloudtrail log path: {}".format(cloudtrail_log_path))
 
         # Open connections to needed AWS services
         self.athena = boto3_session.client("athena")
         self.s3 = boto3_session.client("s3")
 
         if args.skip_setup:
-            logging.info("Skipping initial table creation")
+            self.cdx_logger.info("Skipping initial table creation")
             return
 
         # Check we can access the S3 bucket
@@ -326,7 +329,7 @@ class Athena(object):
         # Create partitions
         #
 
-        logging.info(
+        self.cdx_logger.info(
             "Checking if all partitions for the past {} months exist".format(
                 NUM_MONTHS_FOR_PARTITIONS
             )
@@ -379,7 +382,7 @@ class Athena(object):
         # Run the queries
         query_count = len(queries_to_make)
         for query in queries_to_make:
-            logging.info("Partition groups remaining to create: {}".format(query_count))
+            self.cdx_logger.info("Partition groups remaining to create: {}".format(query_count))
             self.query_athena(query)
             query_count -= 1
 

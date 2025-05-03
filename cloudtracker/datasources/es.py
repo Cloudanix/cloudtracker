@@ -26,6 +26,7 @@ USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 from elasticsearch import Elasticsearch
 from elasticsearch_dsl import Search, Q
 from cloudtracker import normalize_api_call
+import logging
 
 
 class ElasticSearch(object):
@@ -36,7 +37,11 @@ class ElasticSearch(object):
     # Create search filters
     searchfilter = None
 
-    def __init__(self, config, start, end):
+    # Logger
+    cdx_logger = logging
+
+    def __init__(self, config, start, end, cdx_logger):
+        self.cdx_logger = cdx_logger
         # Open connection to ElasticSearch
         self.es = Elasticsearch([config], timeout=900)
         self.searchfilter = {}

@@ -499,13 +499,13 @@ def run(args, config, boto3_session, start, end, account_iam, datasource, princi
                     "'pip install git+https://github.com/duo-labs/cloudtracker.git#egg=cloudtracker[es6]' for "
                     "elasticsearch 6 support"
                 )
-            datasource = ElasticSearch(config["elasticsearch"], start, end)
+            datasource = ElasticSearch(config["elasticsearch"], start, end, cdx_logger)
         else:
             cdx_logger.debug("Using Athena")
             from cloudtracker.datasources.athena import Athena
             if not athena_boto3_session:
                 athena_boto3_session = boto3_session
-            datasource = Athena(config['account']["athena"], account, athena_boto3_session, start, end, args[0])
+            datasource = Athena(config['account']["athena"], account, athena_boto3_session, start, end, args[0], cdx_logger)
 
     # Read AWS actions
     aws_api_list = read_aws_api_list()
