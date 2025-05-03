@@ -23,7 +23,6 @@ USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ---------------------------------------------------------------------------
 """
 
-import logging
 import boto3
 import time
 import json
@@ -53,7 +52,7 @@ class Athena(object):
     search_filter = ""
     table_name = ""
     workgroup = 'primary'
-    cdx_logger = logging
+    cdx_logger = None
 
     def query_athena(
         self, query, context={"Database": database}, do_not_wait=False, skip_header=True, retry=False

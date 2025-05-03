@@ -26,7 +26,6 @@ USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 from elasticsearch import Elasticsearch
 from elasticsearch_dsl import Search, Q
 from cloudtracker import normalize_api_call
-import logging
 
 
 class ElasticSearch(object):
@@ -38,7 +37,7 @@ class ElasticSearch(object):
     searchfilter = None
 
     # Logger
-    cdx_logger = logging
+    cdx_logger = None
 
     def __init__(self, config, start, end, cdx_logger):
         self.cdx_logger = cdx_logger
