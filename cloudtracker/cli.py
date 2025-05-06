@@ -296,22 +296,19 @@ def main(principals, organization_id, account_id, credentials, principal_types, 
                 )
                 continue
 
-            if cloudtrail_log_paths[log_level].get("boto3_session"):
-                try:
-                    s3 = cloudtrail_log_paths[log_level]["boto3_session"].client('s3')
-                    target_bucket = logging_account["bucketName"]
-                    s3.get_object(
-                        Bucket=target_bucket,
-                        Key=cloudtrail_log_path["path"],
-                    )
-                    cdx_logger.info(f"Found valid path in logging account bucket '{target_bucket}' for level '{log_level}'.")
-                    cloudtrail_log_paths[log_level]["present"] = True
-                    cloudtrail_log_paths[log_level]["bucket"] = target_bucket
-                except (s3.exceptions.NoSuchKey, s3.exceptions.NoSuchBucket, botocore.exceptions.ClientError) as e:
-                    cdx_logger.debug(f"Path not found or error accessing logging account bucket '{target_bucket}' for path '{cloudtrail_log_path['path']}': {e}")
-                    continue
-            else:
-                 cdx_logger.warning(f"Skipping S3 check for log level {log_level} due to session creation failure.")
+            try:
+                s3 = cloudtrail_log_paths[log_level]["boto3_session"].client('s3')
+                target_bucket = logging_account["bucketName"]
+                s3.get_object(
+                    Bucket=target_bucket,
+                    Key=cloudtrail_log_path["path"],
+                )
+                cdx_logger.info(f"Found valid path in logging account bucket '{target_bucket}' for level '{log_level}'.")
+                cloudtrail_log_paths[log_level]["present"] = True
+                cloudtrail_log_paths[log_level]["bucket"] = target_bucket
+            except (s3.exceptions.NoSuchKey, s3.exceptions.NoSuchBucket, botocore.exceptions.ClientError) as e:
+                cdx_logger.debug(f"Path not found or error accessing logging account bucket '{target_bucket}' for path '{cloudtrail_log_path['path']}': {e}")
+                continue
 
 
         S3Bucket = cloudtrail_log_paths.get("account", {}).get("bucket")
