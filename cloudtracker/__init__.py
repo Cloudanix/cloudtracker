@@ -155,10 +155,10 @@ def normalize_api_call(service, eventName):
     return "{}:{}".format(service, eventName)
 
 
-def get_account_iam(account, boto3_session):
+def get_account_iam(account, boto3_session, cdx_logger):
     """Given account data from the config file, open the IAM file for the account"""
+    cdx_logger.info(f"Attempting to get IAM account authorization details for account {account['id']}.")
     iam_client = boto3_session.client('iam')
-    # Retrieve the account authorization details
     response = {
         "UserDetailList": [],
         "GroupDetailList": [],
@@ -173,28 +173,29 @@ def get_account_iam(account, boto3_session):
             response['UserDetailList'].extend(page['UserDetailList'])
             response['RoleDetailList'].extend(page['RoleDetailList'])
 
-            for user_detail in page['UserDetailList']:
+            for user_detail in page.get('UserDetailList', []):
                 for policy in user_detail.get('UserPolicyList', []):
                     policy['Arn'] = f"arn:aws:iam::{account['id']}:policy/{policy['PolicyName']}"
                     policy['PolicyVersionList'] = [{"Document": policy['PolicyDocument']}]
                     del policy['PolicyDocument']
                     response['Policies'].append(policy)
 
-            for group_detail in page['GroupDetailList']:
+            for group_detail in page.get('GroupDetailList', []):
                 for policy in group_detail.get('GroupPolicyList', []):
                     policy['Arn'] = f"arn:aws:iam::{account['id']}:policy/{policy['PolicyName']}"
                     policy['PolicyVersionList'] = [{"Document": policy['PolicyDocument']}]
                     del policy['PolicyDocument']
                     response['Policies'].append(policy)
 
-            for role_detail in page['RoleDetailList']:
+            for role_detail in page.get('RoleDetailList', []):
                 for policy in role_detail.get('RolePolicyList', []):
                     policy['Arn'] = f"arn:aws:iam::{account['id']}:policy/{policy['PolicyName']}"
                     policy['PolicyVersionList'] = [{"Document": policy['PolicyDocument']}]
                     del policy['PolicyDocument']
                     response['Policies'].append(policy)
-
+        cdx_logger.info("Successfully retrieved IAM account authorization details.")
     except Exception as e:
+        cdx_logger.error(f"Failed to retrieve IAM account authorization details: {e}", exc_info=True)
         return response
     return response
 
@@ -241,32 +242,42 @@ def print_actor_diff(performed_actors, allowed_actors, use_color):
             raise Exception("Unknown constant")
 
 
-def get_user_iam(username, account_iam):
+def get_user_iam(username, account_iam, cdx_logger):
     """Given the IAM of an account, and a username, return the IAM data for the user"""
+    cdx_logger.debug(f"Getting IAM data for user: {username}")
     user_iam = jmespath.search(
         "UserDetailList[] | [?UserName == `{}`] | [0]".format(username), account_iam
     )
+    if not user_iam:
+        cdx_logger.warning(f"User '{username}' not found in account IAM data.")
     return user_iam
 
 
-def get_role_iam(rolename, account_iam):
+def get_role_iam(rolename, account_iam, cdx_logger):
     """Given the IAM of an account, and a role name, return the IAM data for the role"""
+    cdx_logger.debug(f"Getting IAM data for role: {rolename}")
     role_iam = jmespath.search(
         "RoleDetailList[] | [?RoleName == `{}`] | [0]".format(rolename), account_iam
     )
+    if not role_iam:
+        cdx_logger.warning(f"Role '{rolename}' not found in account IAM data.")
     return role_iam
 
 
-def get_policy_iam(policyname, account_iam):
+def get_policy_iam(policyname, account_iam, cdx_logger):
     """Given the IAM of an account, and a role name, return the IAM data for the role"""
+    cdx_logger.debug(f"Getting IAM data for policy: {policyname}")
     policy_iam = jmespath.search(
         "Policies[] | [?PolicyName == `{}`] | [0]".format(policyname), account_iam
     )
+    if not policy_iam:
+        cdx_logger.warning(f"Policy '{policyname}' not found in account IAM data.")
     return policy_iam
 
 
-def get_user_allowed_actions(aws_api_list, user_iam, account_iam):
+def get_user_allowed_actions(aws_api_list, user_iam, account_iam, cdx_logger):
     """Return the privileges granted to a user by IAM"""
+    cdx_logger.debug(f"Determining allowed actions for user: {user_iam.get('UserName', 'Unknown')}")
     groups = user_iam["GroupList"]
     managed_policies = user_iam["AttachedManagedPolicies"]
 
@@ -278,23 +289,26 @@ def get_user_allowed_actions(aws_api_list, user_iam, account_iam):
             "GroupDetailList[] | [?GroupName == `{}`] | [0]".format(group), account_iam
         )
         if group_iam is None:
+            cdx_logger.debug(f"Group '{group}' not found for user.")
             continue
         # Get privileges from managed policies attached to the group
-        for managed_policy in group_iam["AttachedManagedPolicies"]:
+        for managed_policy in group_iam.get("AttachedManagedPolicies", []):
             policy_filter = "Policies[?Arn == `{}`].PolicyVersionList[?IsDefaultVersion == true] | [0][0].Document"
             policy = jmespath.search(
                 policy_filter.format(managed_policy["PolicyArn"]), account_iam
             )
             if policy is None:
+                cdx_logger.debug(f"Managed policy '{managed_policy['PolicyArn']}' not found for group '{group}'.")
                 continue
-            for stmt in make_list(policy["Statement"]):
+            for stmt in make_list(policy.get("Statement", [])):
                 privileges.add_stmt(stmt)
 
         # Get privileges from in-line policies attached to the group
-        for inline_policy in group_iam["GroupPolicyList"]:
-            policy = inline_policy["PolicyDocument"]
-            for stmt in make_list(policy["Statement"]):
-                privileges.add_stmt(stmt)
+        for inline_policy in group_iam.get("GroupPolicyList", []):
+            policy = inline_policy.get("PolicyDocument")
+            if policy:
+                for stmt in make_list(policy.get("Statement", [])):
+                    privileges.add_stmt(stmt)
 
     # Get privileges from managed policies attached to the user
     for managed_policy in managed_policies:
@@ -303,8 +317,9 @@ def get_user_allowed_actions(aws_api_list, user_iam, account_iam):
             policy_filter.format(managed_policy["PolicyArn"]), account_iam
         )
         if policy is None:
+            cdx_logger.debug(f"Managed policy '{managed_policy['PolicyArn']}' not found for user.")
             continue
-        for stmt in make_list(policy["Statement"]):
+        for stmt in make_list(policy.get("Statement", [])):
             privileges.add_stmt(stmt)
 
     # Get privileges from inline policies attached to the user
@@ -313,34 +328,42 @@ def get_user_allowed_actions(aws_api_list, user_iam, account_iam):
     ):
         privileges.add_stmt(stmt)
 
-    return privileges.determine_allowed()
+    allowed_actions = privileges.determine_allowed()
+    cdx_logger.debug(f"Determined {len(allowed_actions)} allowed actions for user.")
+    return allowed_actions
 
 
-def get_role_allowed_actions(aws_api_list, role_iam, account_iam):
+def get_role_allowed_actions(aws_api_list, role_iam, account_iam, cdx_logger):
     """Return the privileges granted to a role by IAM"""
+    cdx_logger.debug(f"Determining allowed actions for role: {role_iam.get('RoleName', 'Unknown')}")
     privileges = Privileges(aws_api_list)
 
     # Get privileges from managed policies
-    for managed_policy in role_iam["AttachedManagedPolicies"]:
+    for managed_policy in role_iam.get("AttachedManagedPolicies", []):
         policy_filter = "Policies[?Arn == `{}`].PolicyVersionList[?IsDefaultVersion == true] | [0][0].Document"
         policy = jmespath.search(
             policy_filter.format(managed_policy["PolicyArn"]), account_iam
         )
         if policy is None:
+            cdx_logger.debug(f"Managed policy '{managed_policy['PolicyArn']}' not found for role.")
             continue
-        for stmt in make_list(policy["Statement"]):
+        for stmt in make_list(policy.get("Statement", [])):
             privileges.add_stmt(stmt)
 
     # Get privileges from attached policies
-    for policy in role_iam["RolePolicyList"]:
-        for stmt in make_list(policy["PolicyDocument"]["Statement"]):
-            privileges.add_stmt(stmt)
+    for policy in role_iam.get("RolePolicyList", []):
+        if "PolicyDocument" in policy:
+            for stmt in make_list(policy["PolicyDocument"].get("Statement", [])):
+                privileges.add_stmt(stmt)
 
-    return privileges.determine_allowed()
+    allowed_actions = privileges.determine_allowed()
+    cdx_logger.debug(f"Determined {len(allowed_actions)} allowed actions for role.")
+    return allowed_actions
 
 
-def get_policy_allowed_actions(aws_api_list, policy_iam, account_iam):
-    """Return the privileges granted to a role by IAM"""
+def get_policy_allowed_actions(aws_api_list, policy_iam, account_iam, cdx_logger):
+    """Return the privileges granted by a policy"""
+    cdx_logger.debug(f"Determining allowed actions for policy: {policy_iam.get('PolicyName', 'Unknown')}")
     privileges = Privileges(aws_api_list)
 
     # Get privileges from managed policies
@@ -349,10 +372,15 @@ def get_policy_allowed_actions(aws_api_list, policy_iam, account_iam):
         policy_filter.format(policy_iam["Arn"]), account_iam
     )
     if policy:
-        for stmt in make_list(policy["Statement"]):
+        for stmt in make_list(policy.get("Statement", [])):
             privileges.add_stmt(stmt)
+    else:
+        cdx_logger.warning(f"Policy document not found for ARN: {policy_iam['Arn']}")
 
-    return privileges.determine_allowed()
+
+    allowed_actions = privileges.determine_allowed()
+    cdx_logger.debug(f"Determined {len(allowed_actions)} allowed actions for policy.")
+    return allowed_actions
 
 
 def is_recorded_by_cloudtrail(action):
@@ -468,27 +496,37 @@ def get_account(accounts, account_name):
     return None
 
 
-def read_aws_api_list(aws_api_list_file="aws_api_list.txt"):
+def read_aws_api_list(aws_api_list_file="aws_api_list.txt", cdx_logger=None):
     """Read in the list of all known AWS API calls"""
+    if cdx_logger:
+        cdx_logger.info(f"Reading AWS API list from {aws_api_list_file}.")
     api_list_path = pkg_resources.resource_filename(
         __name__, "data/{}".format(aws_api_list_file)
     )
     aws_api_list = {}
+
     with open(api_list_path) as f:
         lines = f.readlines()
     for line in lines:
-        service, event = line.rstrip().split(":")
-        aws_api_list[normalize_api_call(service, event)] = True
+        parts = line.rstrip().split(":")
+        if len(parts) == 2:
+            service, event = parts
+            aws_api_list[normalize_api_call(service, event)] = True
+    if cdx_logger:
+        cdx_logger.info(f"Successfully read {len(aws_api_list)} AWS API calls.")
+
     return aws_api_list
 
 
 def run(args, config, boto3_session, start, end, account_iam, datasource, principals_arn, athena_boto3_session, cdx_logger):
     """Perform the requested command"""
+    cdx_logger.info("Starting run function")
     use_color = args[0].use_color
 
     account = config["account"]
     if not datasource:
         if "elasticsearch" in config:
+            cdx_logger.debug("Using Elasticsearch as datasource")
             try:
                 from cloudtracker.datasources.es import ElasticSearch
             except ImportError:
@@ -501,16 +539,18 @@ def run(args, config, boto3_session, start, end, account_iam, datasource, princi
                 )
             datasource = ElasticSearch(config["elasticsearch"], start, end, cdx_logger)
         else:
-            cdx_logger.debug("Using Athena")
+            cdx_logger.debug("Using Athena as datasource")
             from cloudtracker.datasources.athena import Athena
             if not athena_boto3_session:
                 athena_boto3_session = boto3_session
             datasource = Athena(config['account']["athena"], account, athena_boto3_session, start, end, args[0], cdx_logger)
 
     # Read AWS actions
-    aws_api_list = read_aws_api_list()
+    cdx_logger.debug("Reading AWS API list")
+    aws_api_list = read_aws_api_list(cdx_logger=cdx_logger)
 
     # Read cloudtrail_supported_events
+    cdx_logger.debug("Reading CloudTrail supported actions")
     global cloudtrail_supported_actions
     ct_actions_path = pkg_resources.resource_filename(
         __name__, "data/{}".format("cloudtrail_supported_actions.txt")
@@ -523,25 +563,32 @@ def run(args, config, boto3_session, start, end, account_iam, datasource, princi
         cloudtrail_supported_actions[normalize_api_call(service, event)] = True
 
     if not account_iam:
-        account_iam = get_account_iam(account, boto3_session)
+        cdx_logger.debug("Fetching account IAM details")
+        account_iam = get_account_iam(account, boto3_session, cdx_logger)
+        cdx_logger.debug("Finished fetching account IAM details")
+
 
     search_query = datasource.get_search_query()
 
     users_performed_actions = {}
     roles_performed_actions = {}
     if args[0].user:
+        cdx_logger.debug(f"Fetching performed actions for users based on args: {args[0]}")
         if args[0].destpolicy:
             users_performed_actions = datasource.get_performed_event_names_by_users(search_query, principals_arn)
         elif args[0].permissionsetid:
             users_performed_actions = datasource.get_performed_event_names_by_sso_users(search_query, principals_arn)
     elif args[0].role:
+        cdx_logger.debug(f"Fetching performed actions for roles based on args: {args[0]}")
         roles_performed_actions = datasource.get_performed_event_names_by_roles(search_query, principals_arn)
 
     policy_allowed_actions = {}
     data = []
     for arg in args:
+        cdx_logger.debug(f"Processing argument: {arg}")
         if arg.list:
             actor_type = arg.list
+            cdx_logger.info(f"Listing actors of type: {actor_type}")
 
             if actor_type == "users":
                 allowed_actors = get_allowed_users(account_iam)
@@ -556,6 +603,7 @@ def run(args, config, boto3_session, start, end, account_iam, datasource, princi
 
         else:
             if arg.destaccount:
+                cdx_logger.debug(f"Getting destination account: {arg.destaccount}")
                 destination_account = get_account(config["accounts"], arg.destaccount)
             else:
                 destination_account = account
@@ -566,15 +614,20 @@ def run(args, config, boto3_session, start, end, account_iam, datasource, princi
 
             if arg.user:
                 username = arg.user
+                cdx_logger.info(f"Processing user: {username}")
                 if not username in users_performed_actions:
                     if arg.permissionsetid:
                         user_iam = {
                             "identity": arg.identity
                         }
+                        cdx_logger.debug(f"Using identity for permissionsetid: {arg.identity}")
                     else:
-                        user_iam = get_user_iam(username, account_iam)
+                        user_iam = get_user_iam(username, account_iam, cdx_logger)
+                        cdx_logger.debug(f"Fetched IAM details for user: {username}")
+
 
                     if not user_iam:
+                        cdx_logger.warning(f"Could not find IAM details for user: {username}")
                         continue
                 # print(
                 #     "Getting info for user {}".format(
@@ -583,113 +636,147 @@ def run(args, config, boto3_session, start, end, account_iam, datasource, princi
                 # )
 
                 if arg.destrole:
-                    dest_role_iam = get_role_iam(arg.destrole, destination_iam)
+                    cdx_logger.info(f"Analyzing AssumeRole into role: {arg.destrole} for user {username}")
+                    dest_role_iam = get_role_iam(arg.destrole, destination_iam, cdx_logger)
                     if not dest_role_iam:
+                        cdx_logger.warning(f"Could not find destination role: {arg.destrole}")
                         continue
                     print("Getting info for AssumeRole into {}".format(arg.destrole))
 
                     allowed_actions = get_role_allowed_actions(
-                        aws_api_list, dest_role_iam, destination_iam
+                        aws_api_list, dest_role_iam, destination_iam, cdx_logger
                     )
+                    cdx_logger.debug(f"Calculated allowed actions for destination role: {arg.destrole}")
 
                     performed_actions = datasource.get_performed_event_names_by_user_in_role(
                         search_query, user_iam, dest_role_iam
                     )
+                    cdx_logger.debug(f"Fetched performed actions for user {username} assuming role {arg.destrole}")
+
                 elif arg.destpolicy:
+                    cdx_logger.info(f"Analyzing policy: {arg.destpolicy} for user {username}")
                     # print("Getting info for policy {}".format(arg.destpolicy))
                     if not arg.destpolicy in policy_allowed_actions:
-                        dest_policy_iam = get_policy_iam(arg.destpolicy, destination_iam)
+                        dest_policy_iam = get_policy_iam(arg.destpolicy, destination_iam, cdx_logger)
                         if not dest_policy_iam:
                             policy_allowed_actions[arg.destpolicy] = []
+                            cdx_logger.warning(f"Could not find destination policy: {arg.destpolicy}")
                             continue
                         policy_allowed_actions[arg.destpolicy] = get_policy_allowed_actions(
-                            aws_api_list, dest_policy_iam, destination_iam
+                            aws_api_list, dest_policy_iam, destination_iam, cdx_logger
                         )
+                        cdx_logger.debug(f"Calculated allowed actions for policy: {arg.destpolicy}")
                     allowed_actions = policy_allowed_actions[arg.destpolicy]
                     if not allowed_actions:
+                        cdx_logger.info(f"No allowed actions found for policy: {arg.destpolicy}")
                         continue
 
                     if not username in users_performed_actions:
                         users_performed_actions[username] = datasource.get_performed_event_names_by_user(
                             search_query, user_iam
                         )
+                        cdx_logger.debug(f"Fetched performed actions for user: {username}")
                     performed_actions = users_performed_actions[username]
 
                 elif arg.permissionsetid:
+                    cdx_logger.info(f"Analyzing permissionsetid: {arg.permissionsetid} for user identity {user_iam['identity']}")
                     allowed_actions = []
                     for policy in arg.policies:
                         if not policy in policy_allowed_actions:
-                            dest_policy_iam = get_policy_iam(policy, destination_iam)
+                            dest_policy_iam = get_policy_iam(policy, destination_iam, cdx_logger)
                             if not dest_policy_iam:
                                 policy_allowed_actions[policy] = []
+                                cdx_logger.warning(f"Could not find policy: {policy} for permissionsetid")
                                 continue
                             policy_allowed_actions[policy] = get_policy_allowed_actions(
-                                aws_api_list, dest_policy_iam, destination_iam
+                                aws_api_list, dest_policy_iam, destination_iam, cdx_logger
                             )
+                            cdx_logger.debug(f"Calculated allowed actions for policy: {policy} for permissionsetid")
                         allowed_actions.extend(policy_allowed_actions[policy])
                     if not allowed_actions:
+                        cdx_logger.info(f"No allowed actions found for permissionsetid: {arg.permissionsetid}")
                         continue
 
                     if not user_iam["identity"] in users_performed_actions:
                         users_performed_actions[user_iam["identity"]] = datasource.get_performed_event_names_by_user(
                             search_query, user_iam
                         )
+                        cdx_logger.debug(f"Fetched performed actions for user identity: {user_iam['identity']}")
                     performed_actions = users_performed_actions[user_iam["identity"]]
 
                 else:
+                    cdx_logger.info(f"Analyzing user: {username}")
                     allowed_actions = get_user_allowed_actions(
-                        aws_api_list, user_iam, account_iam
+                        aws_api_list, user_iam, account_iam, cdx_logger
                     )
+                    cdx_logger.debug(f"Calculated allowed actions for user: {username}")
                     performed_actions = datasource.get_performed_event_names_by_user(
                         search_query, user_iam
                     )
+                    cdx_logger.debug(f"Fetched performed actions for user: {username}")
+
             elif arg.role:
                 rolename = arg.role
+                cdx_logger.info(f"Processing role: {rolename}")
                 if not rolename in roles_performed_actions:
-                    role_iam = get_role_iam(rolename, account_iam)
+                    role_iam = get_role_iam(rolename, account_iam, cdx_logger)
                     if not role_iam:
+                        cdx_logger.warning(f"Could not find IAM details for role: {rolename}")
                         continue
                 # print("Getting info for role {}".format(rolename))
 
                 if arg.destrole:
-                    dest_role_iam = get_role_iam(arg.destrole, destination_iam)
+                    cdx_logger.info(f"Analyzing AssumeRole into role: {arg.destrole} for role {rolename}")
+                    dest_role_iam = get_role_iam(arg.destrole, destination_iam, cdx_logger)
                     print("Getting info for AssumeRole into {}".format(arg.destrole))
                     if not dest_role_iam:
+                        cdx_logger.warning(f"Could not find destination role: {arg.destrole}")
                         continue
 
                     allowed_actions = get_role_allowed_actions(
-                        aws_api_list, dest_role_iam, destination_iam
+                        aws_api_list, dest_role_iam, destination_iam, cdx_logger
                     )
+                    cdx_logger.debug(f"Calculated allowed actions for destination role: {arg.destrole}")
                     performed_actions = datasource.get_performed_event_names_by_role_in_role(
                         search_query, role_iam, dest_role_iam
                     )
+                    cdx_logger.debug(f"Fetched performed actions for role {rolename} assuming role {arg.destrole}")
                 elif arg.destpolicy:
+                    cdx_logger.info(f"Analyzing policy: {arg.destpolicy} for role {rolename}")
                     # print("Getting info for policy {}".format(arg.destpolicy))
                     if not arg.destpolicy in policy_allowed_actions:
-                        dest_policy_iam = get_policy_iam(arg.destpolicy, destination_iam)
+                        dest_policy_iam = get_policy_iam(arg.destpolicy, destination_iam, cdx_logger)
                         if not dest_policy_iam:
                             policy_allowed_actions[arg.destpolicy] = []
+                            cdx_logger.warning(f"Could not find destination policy: {arg.destpolicy}")
                             continue
                         policy_allowed_actions[arg.destpolicy] = get_policy_allowed_actions(
-                            aws_api_list, dest_policy_iam, destination_iam
+                            aws_api_list, dest_policy_iam, destination_iam, cdx_logger
                         )
+                        cdx_logger.debug(f"Calculated allowed actions for policy: {arg.destpolicy}")
                     allowed_actions = policy_allowed_actions[arg.destpolicy]
                     if not allowed_actions:
+                        cdx_logger.info(f"No allowed actions found for policy: {arg.destpolicy}")
                         continue
 
                     if not rolename in roles_performed_actions:
                         roles_performed_actions[rolename] = datasource.get_performed_event_names_by_role(
                             search_query, role_iam
                         )
+                        cdx_logger.debug(f"Fetched performed actions for role: {rolename}")
                     performed_actions = roles_performed_actions[rolename]
                 else:
+                    cdx_logger.info(f"Analyzing role: {rolename}")
                     allowed_actions = get_role_allowed_actions(
-                        aws_api_list, role_iam, account_iam
+                        aws_api_list, role_iam, account_iam, cdx_logger
                     )
+                    cdx_logger.debug(f"Calculated allowed actions for role: {rolename}")
                     performed_actions = datasource.get_performed_event_names_by_role(
                         search_query, role_iam
                     )
+                    cdx_logger.debug(f"Fetched performed actions for role: {rolename}")
             else:
+                cdx_logger.error("Neither user nor role specified")
                 exit("ERROR: Must specify a user or a role")
 
             printfilter = {}
@@ -723,4 +810,6 @@ def run(args, config, boto3_session, start, end, account_iam, datasource, princi
                 "unusedPermissions": unused_permissions
             })
             data.append(principal)
+
+    cdx_logger.info("Finished run function")
     return data, datasource.output_bucket, account_iam, datasource
