@@ -29,6 +29,7 @@ import json
 import re
 import datetime
 from dateutil.relativedelta import relativedelta
+import logging
 
 from cloudtracker import normalize_api_call
 
@@ -190,8 +191,17 @@ class Athena(object):
         self.cdx_logger = cdx_logger
         self.cdx_logger.info("Initializing Athena datasource.")
         self.cdx_logger.debug(f"Received config: {config}, account: {account['id']}, start: {start}, end: {end}")
+
         # Mute boto except errors
-        self.cdx_logger.getLogger("botocore").setLevel(self.cdx_logger.WARN) # This is fine, not cdx_logger itself
+        botocore_logger = logging.getLogger("botocore")
+        botocore_logger.setLevel(logging.WARNING)
+        if self.cdx_logger and self.cdx_logger.handlers:
+            for handler in self.cdx_logger.handlers:
+                botocore_logger.addHandler(handler)
+            botocore_logger.propagate = False
+        else:
+            self.cdx_logger.warning("cdx_logger has no handlers. Botocore logs will propagate to root.")
+
         self.cdx_logger.info(
             "Source of CloudTrail logs: s3://{bucket}/{path}".format(
                 bucket=config["s3_bucket"], path=config["path"]

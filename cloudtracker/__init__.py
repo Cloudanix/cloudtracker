@@ -156,7 +156,7 @@ def normalize_api_call(service, eventName):
 
 
 def get_account_iam(account, boto3_session, cdx_logger):
-    """Given account data from the config file, open the IAM file for the account"""
+    """Given account data, retrieve the account's full IAM authorization details."""
     cdx_logger.info(f"Attempting to get IAM account authorization details for account {account['id']}.")
     iam_client = boto3_session.client('iam')
     response = {
