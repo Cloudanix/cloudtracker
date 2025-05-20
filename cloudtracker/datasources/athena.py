@@ -195,12 +195,18 @@ class Athena(object):
         # Mute boto except errors
         botocore_logger = logging.getLogger("botocore")
         botocore_logger.setLevel(logging.WARNING)
-        if self.cdx_logger and self.cdx_logger.handlers:
-            for handler in self.cdx_logger.handlers:
-                botocore_logger.addHandler(handler)
+        std_logger = None
+        if self.cdx_logger:
+            std_logger = self.cdx_logger.logger
+
+        if std_logger and std_logger.handlers:
+            for handler in std_logger.handlers:
+                if handler not in botocore_logger.handlers:
+                    botocore_logger.addHandler(handler)
             botocore_logger.propagate = False
         else:
-            self.cdx_logger.warning("cdx_logger has no handlers. Botocore logs will propagate to root.")
+            if self.cdx_logger:
+                self.cdx_logger.warning("cdx_logger (or its underlying standard logger) has no handlers. Botocore logs will propagate to root.")
 
         self.cdx_logger.info(
             "Source of CloudTrail logs: s3://{bucket}/{path}".format(
