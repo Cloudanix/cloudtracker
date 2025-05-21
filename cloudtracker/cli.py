@@ -306,7 +306,10 @@ def main(principals, organization_id, account_id, credentials, principal_types, 
         logging.info(f"cleaning the athena query results")
         output_bucket = output_bucket.split("/")[-1]
         try:
-            s3_client = boto3_session.client('s3')
+            athena_results_cleanup_boto3_session = athena_boto3_session
+            if not athena_boto3_session:
+                athena_results_cleanup_boto3_session = boto3_session
+            s3_client = athena_results_cleanup_boto3_session.client('s3')
 
             objects = s3_client.list_objects_v2(Bucket=output_bucket)
 
