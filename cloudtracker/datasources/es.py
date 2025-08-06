@@ -36,7 +36,11 @@ class ElasticSearch(object):
     # Create search filters
     searchfilter = None
 
-    def __init__(self, config, start, end):
+    # Logger
+    cdx_logger = None
+
+    def __init__(self, config, start, end, cdx_logger):
+        self.cdx_logger = cdx_logger
         # Open connection to ElasticSearch
         self.es = Elasticsearch([config], timeout=900)
         self.searchfilter = {}

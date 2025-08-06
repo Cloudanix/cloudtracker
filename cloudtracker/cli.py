@@ -28,13 +28,13 @@ import argparse
 import datetime
 import boto3
 import botocore.exceptions
-import logging
 
 
 from . import run
 
 
-def main(principals, organization_id, account_id, credentials, principal_types, account_iam, datasource, logging_account):
+def main(principals, organization_id, account_id, credentials, principal_types, account_iam, datasource, logging_account, cdx_logger):
+    cdx_logger.info(f"Starting CloudTracker main function for account {account_id}.")
     now = datetime.datetime.now()
     parser = argparse.ArgumentParser()
 
@@ -141,7 +141,9 @@ def main(principals, organization_id, account_id, credentials, principal_types, 
     )
     args = []
     principals_arn = ""
+    cdx_logger.info(f"Processing {len(principals)} principal(s) to generate arguments.")
     for principal in principals:
+        cdx_logger.debug(f"Processing principal: {principal}")
         if not principal.get('arn', principal.get('identity')) in principals_arn:
             principals_arn = principals_arn + f"'{principal.get('arn', principal.get('identity'))}', "
         if all(element in principal_types for element in ['role', 'policy']):
@@ -153,10 +155,16 @@ def main(principals, organization_id, account_id, credentials, principal_types, 
         elif all(element in principal_types for element in ['user', 'permissionset']):
             args.append(parser.parse_args(args=['--account', account_id, '--user', principal['name'], '--permissionsetid', principal['id'], '--identity', principal['identity'], '--policies', principal['policies']]))
         else:
+            cdx_logger.error(f"Invalid principal type combination: {principal_types}")
             raise Exception("invalid principal")
+        cdx_logger.debug(f"Added args for principal: {args[-1]}")
 
     principals_arn = f"({principals_arn[:-2]})"
+    cdx_logger.debug(f"Principals ARN string for query: {principals_arn}")
+
     try:
+        cdx_logger.info(f"Attempting to create Boto3 session.")
+        cdx_logger.debug(f"Credentials type: {credentials.get('type')}")
         if credentials['type'] == 'self':
             boto3_session = boto3.Session(
                 aws_access_key_id=credentials['aws_access_key_id'],
@@ -170,10 +178,11 @@ def main(principals, organization_id, account_id, credentials, principal_types, 
                 aws_session_token=credentials['session_token'],
                 region_name=credentials.get('primary_region', "us-east-1")
             )
+        cdx_logger.info("Boto3 session created successfully.")
 
     except (botocore.exceptions.BotoCoreError, botocore.exceptions.ClientError) as e:
-        logging.debug("Error occurred calling boto3.Session().", exc_info=True)
-        logging.error(
+        cdx_logger.debug("Error occurred calling boto3.Session().", exc_info=True)
+        cdx_logger.error(
             (
                 "Unable to initialize the default AWS session, an error occurred: %s. Make sure your AWS credentials "
                 "are configured correctly, your AWS config file is valid, and your credentials have the SecurityAudit "
@@ -186,22 +195,28 @@ def main(principals, organization_id, account_id, credentials, principal_types, 
     athena_boto3_session = None
 
     if not logging_account:
+        cdx_logger.info("No logging account specified. Checking CloudTrail in the target account.")
         # Create a CloudTrail client
         cloudtrail_client = boto3_session.client('cloudtrail')
 
+        cdx_logger.info("Describing CloudTrail trails.")
         # Retrieve the list of CloudTrail trails
         response = cloudtrail_client.describe_trails()
 
         # Extract the S3 bucket names from the response
         bucket_names = [trail['S3BucketName'] for trail in response['trailList']]
+        cdx_logger.info(f"Found {len(bucket_names)} trail buckets: {bucket_names}")
 
         if len(bucket_names) == 0:
+            cdx_logger.error("No CloudTrail trails found.")
             raise Exception("cloudtrail trails doesn't exists")
         s3 = boto3_session.client('s3')
         S3Bucket = None
         cloudtrail_log_paths = {"account": {"path": "AWSLogs/{account_id}/CloudTrail/".format(account_id=account_id)}}
         if organization_id:
             cloudtrail_log_paths["organization"] = {"path": "AWSLogs/{organization_id}/{account_id}/CloudTrail/".format(account_id=account_id, organization_id=organization_id)}
+
+        cdx_logger.info("Checking S3 paths for CloudTrail logs...")
         for log_level, cloudtrail_log_path in cloudtrail_log_paths.items():
             for bucket in bucket_names:
                 try:
@@ -209,17 +224,24 @@ def main(principals, organization_id, account_id, credentials, principal_types, 
                         Bucket=bucket,
                         Key=cloudtrail_log_path["path"],
                     )
+                    cdx_logger.info(f"Found valid path in bucket '{bucket}' for level '{log_level}'.")
                     cloudtrail_log_paths[log_level]["present"] = True
                     cloudtrail_log_paths[log_level]["bucket"] = bucket
                     break
                 except (s3.exceptions.NoSuchKey, s3.exceptions.NoSuchBucket, botocore.exceptions.ClientError) as e:
+                    cdx_logger.debug(f"Path not found or error accessing bucket '{bucket}' for path '{cloudtrail_log_path['path']}': {e}")
                     continue
 
         S3Bucket = cloudtrail_log_paths.get("account", {}).get("bucket")
 
         if cloudtrail_log_paths.get("organization", {}).get("present"):
             S3Bucket = cloudtrail_log_paths.get("organization", {}).get("bucket")
+            cdx_logger.info(f"Using organization level bucket: {S3Bucket}")
+        elif S3Bucket:
+            cdx_logger.info(f"Using account level bucket: {S3Bucket}")
+
         if not S3Bucket:
+            cdx_logger.error("Could not determine a valid CloudTrail S3 bucket.")
             raise Exception("cloudtrail s3 bucket doesn't exists")
         config = {
             "account":
@@ -234,33 +256,39 @@ def main(principals, organization_id, account_id, credentials, principal_types, 
         if cloudtrail_log_paths.get("organization", {}).get("present"):
             config["account"]["athena"]["org_id"] = organization_id
     else:
+        cdx_logger.info(f"Logging account provided: {logging_account.get('bucketName')}")
         S3Bucket = None
         cloudtrail_log_paths = {"account": {"path": "AWSLogs/{account_id}/CloudTrail/".format(account_id=account_id)}}
         if organization_id:
             cloudtrail_log_paths["organization"] = {"path": "AWSLogs/{organization_id}/{account_id}/CloudTrail/".format(account_id=account_id, organization_id=organization_id)}
         creds = logging_account.get("creds", {})
+
+        cdx_logger.info("Checking S3 paths in logging account...")
         for log_level, cloudtrail_log_path in cloudtrail_log_paths.items():
 
             try:
+                cdx_logger.info(f"Attempting to create Boto3 session for logging account ({log_level} level check).")
+                logging_account_session = None
                 if creds['type'] == 'self':
-                    cloudtrail_log_paths[log_level]["boto3_session"] = boto3.Session(
+                    logging_account_session = boto3.Session(
                         aws_access_key_id=creds['aws_access_key_id'],
                         aws_secret_access_key=creds['aws_secret_access_key'],
                     )
-
                 elif creds['type'] == 'assumerole':
-                    cloudtrail_log_paths[log_level]["boto3_session"] = boto3.Session(
+                    logging_account_session = boto3.Session(
                         aws_access_key_id=creds['aws_access_key_id'],
                         aws_secret_access_key=creds['aws_secret_access_key'],
                         aws_session_token=creds['session_token'],
                         region_name=creds.get('primary_region', "us-east-1")
                     )
+                cloudtrail_log_paths[log_level]["boto3_session"] = logging_account_session
+                cdx_logger.info("Logging account Boto3 session created successfully.")
 
             except (botocore.exceptions.BotoCoreError, botocore.exceptions.ClientError) as e:
-                logging.debug("Error occurred calling boto3.Session().", exc_info=True)
-                logging.error(
+                cdx_logger.debug("Error occurred calling boto3.Session().", exc_info=True)
+                cdx_logger.error(
                     (
-                        "Unable to initialize the default AWS session, an error occurred: %s. Make sure your AWS credentials "
+                        "Unable to initialize AWS session for logging account ({log_level} level check), an error occurred: %s. Make sure your AWS credentials "
                         "are configured correctly, your AWS config file is valid, and your credentials have the SecurityAudit "
                         "policy attached."
                     ),
@@ -270,14 +298,18 @@ def main(principals, organization_id, account_id, credentials, principal_types, 
 
             try:
                 s3 = cloudtrail_log_paths[log_level]["boto3_session"].client('s3')
+                target_bucket = logging_account["bucketName"]
                 s3.get_object(
-                    Bucket=logging_account["bucketName"],
+                    Bucket=target_bucket,
                     Key=cloudtrail_log_path["path"],
                 )
+                cdx_logger.info(f"Found valid path in logging account bucket '{target_bucket}' for level '{log_level}'.")
                 cloudtrail_log_paths[log_level]["present"] = True
-                cloudtrail_log_paths[log_level]["bucket"] = logging_account["bucketName"]
+                cloudtrail_log_paths[log_level]["bucket"] = target_bucket
             except (s3.exceptions.NoSuchKey, s3.exceptions.NoSuchBucket, botocore.exceptions.ClientError) as e:
+                cdx_logger.debug(f"Path not found or error accessing logging account bucket '{target_bucket}' for path '{cloudtrail_log_path['path']}': {e}")
                 continue
+
 
         S3Bucket = cloudtrail_log_paths.get("account", {}).get("bucket")
         athena_boto3_session = cloudtrail_log_paths.get("account", {}).get("boto3_session")
@@ -285,8 +317,14 @@ def main(principals, organization_id, account_id, credentials, principal_types, 
         if cloudtrail_log_paths.get("organization", {}).get("present"):
             S3Bucket = cloudtrail_log_paths.get("organization", {}).get("bucket")
             athena_boto3_session = cloudtrail_log_paths.get("organization", {}).get("boto3_session")
+            cdx_logger.info(f"Using organization level bucket from logging account: {S3Bucket}")
+        elif S3Bucket:
+             cdx_logger.info(f"Using account level bucket from logging account: {S3Bucket}")
+
         if not S3Bucket:
+            cdx_logger.error("Could not determine a valid CloudTrail S3 bucket in logging account.")
             raise Exception("cloudtrail s3 bucket doesn't exists")
+
         config = {
             "account":
                 {
@@ -299,25 +337,43 @@ def main(principals, organization_id, account_id, credentials, principal_types, 
         }
         if cloudtrail_log_paths.get("organization", {}).get("present"):
             config["account"]["athena"]["org_id"] = organization_id
+            cdx_logger.debug("Added organization ID to config.")
+        if not athena_boto3_session:
+             cdx_logger.warning("Athena Boto3 session is not set after checking logging account paths. This might cause issues.")
+
 
     data = []
     if args:
-        data, output_bucket, account_iam, datasource = run(args, config, boto3_session, args[0].start, args[0].end, account_iam, datasource, principals_arn, athena_boto3_session)
-        logging.info(f"cleaning the athena query results")
-        output_bucket = output_bucket.split("/")[-1]
+        cdx_logger.info(f"Calling CloudTracker run function with {len(args)} argument sets.")
+        data, output_bucket, account_iam, datasource = run(args, config, boto3_session, args[0].start, args[0].end, account_iam, datasource, principals_arn, athena_boto3_session, cdx_logger)
+        cdx_logger.info(f"CloudTracker run function finished. Received {len(data)} results.")
+        cdx_logger.info(f"Cleaning the athena query results from: {output_bucket}")
+        output_bucket_name = output_bucket.split("/")[-1]
+        cdx_logger.debug(f"Extracted output bucket name for cleanup: {output_bucket_name}")
         try:
             athena_results_cleanup_boto3_session = athena_boto3_session
             if not athena_boto3_session:
                 athena_results_cleanup_boto3_session = boto3_session
             s3_client = athena_results_cleanup_boto3_session.client('s3')
 
-            objects = s3_client.list_objects_v2(Bucket=output_bucket)
+            cdx_logger.info(f"Listing objects in cleanup bucket: {output_bucket_name}")
+            objects = s3_client.list_objects_v2(Bucket=output_bucket_name)
 
             if 'Contents' in objects:
-                for obj in objects['Contents']:
-                    s3_client.delete_object(Bucket=output_bucket, Key=obj['Key'])
+                num_objects = len(objects['Contents'])
+                cdx_logger.info(f"Found {num_objects} objects to delete.")
+                for i, obj in enumerate(objects['Contents']):
+                    cdx_logger.debug(f"Deleting object {i+1}/{num_objects}: {obj['Key']}")
+                    s3_client.delete_object(Bucket=output_bucket_name, Key=obj['Key'])
+                cdx_logger.info("Finished deleting objects.")
+            else:
+                cdx_logger.info("No objects found in the cleanup bucket.")
 
         except Exception as e:
-            logging.error(f"Error while cleaning the athena query results: {e}")
+            cdx_logger.error(f"Error while cleaning the athena query results: {e}", exc_info=True)
+    else:
+        cdx_logger.warning("No arguments generated, skipping CloudTracker run and cleanup.")
 
+
+    cdx_logger.info("CloudTracker main function exiting.")
     return data, account_iam, datasource
