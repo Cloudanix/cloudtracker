@@ -213,7 +213,17 @@ def main(principals, organization_id, account_id, credentials, principal_types, 
                     cloudtrail_log_paths[log_level]["bucket"] = bucket
                     break
                 except (s3.exceptions.NoSuchKey, s3.exceptions.NoSuchBucket, botocore.exceptions.ClientError) as e:
-                    continue
+                    try:
+                        resp = s3.list_objects_v2(
+                            Bucket=bucket,
+                            Prefix=cloudtrail_log_path["path"],
+                        )
+                        if resp.get("Contents"):
+                            cloudtrail_log_paths[log_level]["present"] = True
+                            cloudtrail_log_paths[log_level]["bucket"] = bucket
+                            break
+                    except (s3.exceptions.NoSuchKey, s3.exceptions.NoSuchBucket, botocore.exceptions.ClientError) as e:
+                        continue
 
         S3Bucket = cloudtrail_log_paths.get("account", {}).get("bucket")
 
@@ -277,7 +287,17 @@ def main(principals, organization_id, account_id, credentials, principal_types, 
                 cloudtrail_log_paths[log_level]["present"] = True
                 cloudtrail_log_paths[log_level]["bucket"] = logging_account["bucketName"]
             except (s3.exceptions.NoSuchKey, s3.exceptions.NoSuchBucket, botocore.exceptions.ClientError) as e:
-                continue
+                try:
+                    resp = s3.list_objects_v2(
+                        Bucket=bucket,
+                        Prefix=cloudtrail_log_path["path"],
+                    )
+                    if resp.get("Contents"):
+                        cloudtrail_log_paths[log_level]["present"] = True
+                        cloudtrail_log_paths[log_level]["bucket"] = bucket
+                        break
+                except (s3.exceptions.NoSuchKey, s3.exceptions.NoSuchBucket, botocore.exceptions.ClientError) as e:
+                    continue
 
         S3Bucket = cloudtrail_log_paths.get("account", {}).get("bucket")
         athena_boto3_session = cloudtrail_log_paths.get("account", {}).get("boto3_session")
