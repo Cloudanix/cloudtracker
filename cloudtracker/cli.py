@@ -34,7 +34,9 @@ import logging
 from . import run
 
 
-def main(principals, organization_id, account_id, credentials, principal_types, account_iam, datasource, logging_account):
+def main(
+    principals, organization_id, account_id, credentials, principal_types, account_iam, datasource, logging_account
+):
     now = datetime.datetime.now()
     parser = argparse.ArgumentParser()
 
@@ -48,11 +50,7 @@ def main(principals, organization_id, account_id, credentials, principal_types, 
     action_group.add_argument("--user", help="User to investigate", type=str)
     action_group.add_argument("--role", help="Role to investigate", type=str)
 
-    parser.add_argument(
-        "--config",
-        help="Config file name (default: config.yaml)",
-        required=False
-    )
+    parser.add_argument("--config", help="Config file name (default: config.yaml)", required=False)
     parser.add_argument(
         "--iam",
         dest="iam_file",
@@ -76,24 +74,12 @@ def main(principals, organization_id, account_id, credentials, principal_types, 
         required=False,
         type=str,
     )
-    parser.add_argument(
-        "--destrole", help="Role assumed into", required=False, default=None, type=str
-    )
-    parser.add_argument(
-        "--permissionsetid", help="Permission Set into", required=False, default=None, type=str
-    )
-    parser.add_argument(
-        "--identity", help="Permission Set identity into", required=False, default=None, type=str
-    )
-    parser.add_argument(
-        "--policies", help="Permission Set policies into", required=False, default=None, type=list
-    )
-    parser.add_argument(
-        "--destpolicy", help="Policy assumed into", required=False, default=None, type=str
-    )
-    parser.add_argument(
-        "--destpolicyarn", help="Policy arn", required=False, default=None, type=str
-    )
+    parser.add_argument("--destrole", help="Role assumed into", required=False, default=None, type=str)
+    parser.add_argument("--permissionsetid", help="Permission Set into", required=False, default=None, type=str)
+    parser.add_argument("--identity", help="Permission Set identity into", required=False, default=None, type=str)
+    parser.add_argument("--policies", help="Permission Set policies into", required=False, default=None, type=list)
+    parser.add_argument("--destpolicy", help="Policy assumed into", required=False, default=None, type=str)
+    parser.add_argument("--destpolicyarn", help="Policy arn", required=False, default=None, type=str)
     parser.add_argument(
         "--destaccount",
         help="Account assumed into (if different)",
@@ -119,8 +105,7 @@ def main(principals, organization_id, account_id, credentials, principal_types, 
     parser.add_argument(
         "--ignore-unknown",
         dest="show_unknown",
-        help="Don't show granted privileges that aren't recorded in CloudTrail, "
-        "as we don't know if they are used",
+        help="Don't show granted privileges that aren't recorded in CloudTrail, as we don't know if they are used",
         required=False,
         action="store_false",
     )
@@ -142,33 +127,85 @@ def main(principals, organization_id, account_id, credentials, principal_types, 
     args = []
     principals_arn = ""
     for principal in principals:
-        if not principal.get('arn', principal.get('identity')) in principals_arn:
+        if not principal.get("arn", principal.get("identity")) in principals_arn:
             principals_arn = principals_arn + f"'{principal.get('arn', principal.get('identity'))}', "
-        if all(element in principal_types for element in ['role', 'policy']):
-            args.append(parser.parse_args(args=['--account', account_id, '--role', principal['name'], '--destpolicy', principal['attachmentName'], '--destpolicyarn', principal['policyArn']]))
-        elif all(element in principal_types for element in ['user', 'policy']):
-            args.append(parser.parse_args(args=['--account', account_id, '--user', principal['name'], '--destpolicy', principal['attachmentName'], '--destpolicyarn', principal['policyArn']]))
-        elif all(element in principal_types for element in ['user', 'role']):
-            args.append(parser.parse_args(args=['--account', account_id, '--user', principal['name'], '--destrole', principal['attachmentName']]))
-        elif all(element in principal_types for element in ['user', 'permissionset']):
-            args.append(parser.parse_args(args=['--account', account_id, '--user', principal['name'], '--permissionsetid', principal['id'], '--identity', principal['identity'], '--policies', principal['policies']]))
+        if all(element in principal_types for element in ["role", "policy"]):
+            args.append(
+                parser.parse_args(
+                    args=[
+                        "--account",
+                        account_id,
+                        "--role",
+                        principal["name"],
+                        "--destpolicy",
+                        principal["attachmentName"],
+                        "--destpolicyarn",
+                        principal["policyArn"],
+                    ]
+                )
+            )
+        elif all(element in principal_types for element in ["user", "policy"]):
+            args.append(
+                parser.parse_args(
+                    args=[
+                        "--account",
+                        account_id,
+                        "--user",
+                        principal["name"],
+                        "--destpolicy",
+                        principal["attachmentName"],
+                        "--destpolicyarn",
+                        principal["policyArn"],
+                    ]
+                )
+            )
+        elif all(element in principal_types for element in ["user", "role"]):
+            args.append(
+                parser.parse_args(
+                    args=[
+                        "--account",
+                        account_id,
+                        "--user",
+                        principal["name"],
+                        "--destrole",
+                        principal["attachmentName"],
+                    ]
+                )
+            )
+        elif all(element in principal_types for element in ["user", "permissionset"]):
+            args.append(
+                parser.parse_args(
+                    args=[
+                        "--account",
+                        account_id,
+                        "--user",
+                        principal["name"],
+                        "--permissionsetid",
+                        principal["id"],
+                        "--identity",
+                        principal["identity"],
+                        "--policies",
+                        principal["policies"],
+                    ]
+                )
+            )
         else:
             raise Exception("invalid principal")
 
     principals_arn = f"({principals_arn[:-2]})"
     try:
-        if credentials['type'] == 'self':
+        if credentials["type"] == "self":
             boto3_session = boto3.Session(
-                aws_access_key_id=credentials['aws_access_key_id'],
-                aws_secret_access_key=credentials['aws_secret_access_key'],
+                aws_access_key_id=credentials["aws_access_key_id"],
+                aws_secret_access_key=credentials["aws_secret_access_key"],
             )
 
-        elif credentials['type'] == 'assumerole':
+        elif credentials["type"] == "assumerole":
             boto3_session = boto3.Session(
-                aws_access_key_id=credentials['aws_access_key_id'],
-                aws_secret_access_key=credentials['aws_secret_access_key'],
-                aws_session_token=credentials['session_token'],
-                region_name=credentials.get('primary_region', "us-east-1")
+                aws_access_key_id=credentials["aws_access_key_id"],
+                aws_secret_access_key=credentials["aws_secret_access_key"],
+                aws_session_token=credentials["session_token"],
+                region_name=credentials.get("primary_region", "us-east-1"),
             )
 
     except (botocore.exceptions.BotoCoreError, botocore.exceptions.ClientError) as e:
@@ -187,21 +224,25 @@ def main(principals, organization_id, account_id, credentials, principal_types, 
 
     if not logging_account:
         # Create a CloudTrail client
-        cloudtrail_client = boto3_session.client('cloudtrail')
+        cloudtrail_client = boto3_session.client("cloudtrail")
 
         # Retrieve the list of CloudTrail trails
         response = cloudtrail_client.describe_trails()
 
         # Extract the S3 bucket names from the response
-        bucket_names = [trail['S3BucketName'] for trail in response['trailList']]
+        bucket_names = [trail["S3BucketName"] for trail in response["trailList"]]
 
         if len(bucket_names) == 0:
             raise Exception("cloudtrail trails doesn't exists")
-        s3 = boto3_session.client('s3')
+        s3 = boto3_session.client("s3")
         S3Bucket = None
         cloudtrail_log_paths = {"account": {"path": "AWSLogs/{account_id}/CloudTrail/".format(account_id=account_id)}}
         if organization_id:
-            cloudtrail_log_paths["organization"] = {"path": "AWSLogs/{organization_id}/{account_id}/CloudTrail/".format(account_id=account_id, organization_id=organization_id)}
+            cloudtrail_log_paths["organization"] = {
+                "path": "AWSLogs/{organization_id}/{account_id}/CloudTrail/".format(
+                    account_id=account_id, organization_id=organization_id
+                )
+            }
         for log_level, cloudtrail_log_path in cloudtrail_log_paths.items():
             for bucket in bucket_names:
                 try:
@@ -231,39 +272,33 @@ def main(principals, organization_id, account_id, credentials, principal_types, 
             S3Bucket = cloudtrail_log_paths.get("organization", {}).get("bucket")
         if not S3Bucket:
             raise Exception("cloudtrail s3 bucket doesn't exists")
-        config = {
-            "account":
-                {
-                    "id": account_id,
-                    "athena": {
-                        "s3_bucket": S3Bucket,
-                        "path": ''
-                    }
-                }
-        }
+        config = {"account": {"id": account_id, "athena": {"s3_bucket": S3Bucket, "path": ""}}}
         if cloudtrail_log_paths.get("organization", {}).get("present"):
             config["account"]["athena"]["org_id"] = organization_id
     else:
         S3Bucket = None
         cloudtrail_log_paths = {"account": {"path": "AWSLogs/{account_id}/CloudTrail/".format(account_id=account_id)}}
         if organization_id:
-            cloudtrail_log_paths["organization"] = {"path": "AWSLogs/{organization_id}/{account_id}/CloudTrail/".format(account_id=account_id, organization_id=organization_id)}
+            cloudtrail_log_paths["organization"] = {
+                "path": "AWSLogs/{organization_id}/{account_id}/CloudTrail/".format(
+                    account_id=account_id, organization_id=organization_id
+                )
+            }
         creds = logging_account.get("creds", {})
         for log_level, cloudtrail_log_path in cloudtrail_log_paths.items():
-
             try:
-                if creds['type'] == 'self':
+                if creds["type"] == "self":
                     cloudtrail_log_paths[log_level]["boto3_session"] = boto3.Session(
-                        aws_access_key_id=creds['aws_access_key_id'],
-                        aws_secret_access_key=creds['aws_secret_access_key'],
+                        aws_access_key_id=creds["aws_access_key_id"],
+                        aws_secret_access_key=creds["aws_secret_access_key"],
                     )
 
-                elif creds['type'] == 'assumerole':
+                elif creds["type"] == "assumerole":
                     cloudtrail_log_paths[log_level]["boto3_session"] = boto3.Session(
-                        aws_access_key_id=creds['aws_access_key_id'],
-                        aws_secret_access_key=creds['aws_secret_access_key'],
-                        aws_session_token=creds['session_token'],
-                        region_name=creds.get('primary_region', "us-east-1")
+                        aws_access_key_id=creds["aws_access_key_id"],
+                        aws_secret_access_key=creds["aws_secret_access_key"],
+                        aws_session_token=creds["session_token"],
+                        region_name=creds.get("primary_region", "us-east-1"),
                     )
 
             except (botocore.exceptions.BotoCoreError, botocore.exceptions.ClientError) as e:
@@ -279,7 +314,7 @@ def main(principals, organization_id, account_id, credentials, principal_types, 
                 continue
 
             try:
-                s3 = cloudtrail_log_paths[log_level]["boto3_session"].client('s3')
+                s3 = cloudtrail_log_paths[log_level]["boto3_session"].client("s3")
                 s3.get_object(
                     Bucket=logging_account["bucketName"],
                     Key=cloudtrail_log_path["path"],
@@ -289,12 +324,12 @@ def main(principals, organization_id, account_id, credentials, principal_types, 
             except (s3.exceptions.NoSuchKey, s3.exceptions.NoSuchBucket, botocore.exceptions.ClientError) as e:
                 try:
                     resp = s3.list_objects_v2(
-                        Bucket=bucket,
+                        Bucket=logging_account["bucketName"],
                         Prefix=cloudtrail_log_path["path"],
                     )
                     if resp.get("Contents"):
                         cloudtrail_log_paths[log_level]["present"] = True
-                        cloudtrail_log_paths[log_level]["bucket"] = bucket
+                        cloudtrail_log_paths[log_level]["bucket"] = logging_account["bucketName"]
                         break
                 except (s3.exceptions.NoSuchKey, s3.exceptions.NoSuchBucket, botocore.exceptions.ClientError) as e:
                     continue
@@ -307,37 +342,38 @@ def main(principals, organization_id, account_id, credentials, principal_types, 
             athena_boto3_session = cloudtrail_log_paths.get("organization", {}).get("boto3_session")
         if not S3Bucket:
             raise Exception("cloudtrail s3 bucket doesn't exists")
-        config = {
-            "account":
-                {
-                    "id": account_id,
-                    "athena": {
-                        "s3_bucket": S3Bucket,
-                        "path": ''
-                    }
-                }
-        }
+        config = {"account": {"id": account_id, "athena": {"s3_bucket": S3Bucket, "path": ""}}}
         if cloudtrail_log_paths.get("organization", {}).get("present"):
             config["account"]["athena"]["org_id"] = organization_id
 
     data = []
     if args:
-        data, output_bucket, account_iam, datasource = run(args, config, boto3_session, args[0].start, args[0].end, account_iam, datasource, principals_arn, athena_boto3_session)
-        logging.info(f"cleaning the athena query results")
+        data, output_bucket, account_iam, datasource = run(
+            args,
+            config,
+            boto3_session,
+            args[0].start,
+            args[0].end,
+            account_iam,
+            datasource,
+            principals_arn,
+            athena_boto3_session,
+        )
+        logging.info("cleaning the athena query results")
         output_bucket = output_bucket.split("/")[-1]
         try:
             athena_results_cleanup_boto3_session = athena_boto3_session
             if not athena_boto3_session:
                 athena_results_cleanup_boto3_session = boto3_session
-            s3_client = athena_results_cleanup_boto3_session.client('s3')
+            s3_client = athena_results_cleanup_boto3_session.client("s3")
 
             objects = s3_client.list_objects_v2(Bucket=output_bucket)
 
-            if 'Contents' in objects:
-                for obj in objects['Contents']:
-                    s3_client.delete_object(Bucket=output_bucket, Key=obj['Key'])
+            if "Contents" in objects:
+                for obj in objects["Contents"]:
+                    s3_client.delete_object(Bucket=output_bucket, Key=obj["Key"])
 
         except Exception as e:
-            logging.error(f"Error while cleaning the athena query results: {e}")
+            logging.error("Error while cleaning the athena query results: %s", e)
 
     return data, account_iam, datasource
